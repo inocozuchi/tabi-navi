@@ -301,6 +301,215 @@ function parseEvents(s, today) {
   return out;
 }
 
+
+// ===== 旅程表（時刻の行＋内容の行が並ぶ文書） =====
+// 例:
+//   Day 1｜10月27日（火）
+//   18:10
+//   成田空港 発（Peach MM579）
+//   20:00
+//   新千歳空港 着 → 快速エアポートで札幌へ
+//   夜
+//   宿泊：○○ホテル
+// 「7:30 札幌 発（特急宗谷）」のように1行に書かれていても読める。
+const WORD_TIME = { 早朝: [6, 0], 朝: [8, 0], 朝食: [7, 30], 午前: [10, 0], 昼: [12, 0], 昼食: [12, 0], ランチ: [12, 0], 午後: [14, 0], 夕方: [17, 0], 夕食: [18, 30], ディナー: [18, 30], 夜: [20, 0], 深夜: [23, 0] };
+const WORD_RE = new RegExp(`^(${Object.keys(WORD_TIME).join('|')})$`);
+const WORD_LEAD = new RegExp(`^(${Object.keys(WORD_TIME).join('|')})[\\s　:：]+(.+)$`);
+const TIME_ONLY = /^(\d{1,2})[:時](\d{2})分?\s*(頃|ごろ|前後)?(?:\s*[/／、,~]\s*(\d{1,2})[:時](\d{2}))?\s*(頃|ごろ)?$/;
+const TIME_LEAD = /^(\d{1,2})[:時](\d{2})分?\s*(頃|ごろ)?(?:\s*[~\-]\s*(\d{1,2}):(\d{2}))?\s+(.+)$/;
+const SKIP_HEAD = /^(予約)?(チェックリスト|状況)|^(メモ|注意|備考|持ち物|費用|予算|参考|リンク)/;
+const AIR = /\d+\s*便|Peach|ピーチ|ANA|JAL|スカイマーク|ジェットスター|AIRDO|ソラシド|スターフライヤー|\b(?:NH|JL|BC|MM|GK|7G|HD|6J|IJ|FW|NU|JH|OC|[A-Z]{2})\s?\d{2,4}\b/;
+const HOTEL_WORD = /宿泊|泊まる|チェックイン|ホテル|旅館|ゲストハウス|ホステル|カプセル|民宿|ペンション|イン\b/;
+
+export function looksLikeSchedule(s) {
+  const lines = s.split('\n').map((l) => l.trim());
+  let n = 0, heads = 0;
+  for (const l of lines) {
+    if (TIME_ONLY.test(l) || WORD_RE.test(l)) n++;
+    else if (TIME_LEAD.test(l) && /発|着|宿泊|散策|観光|集合|食/.test(l)) n++;
+    if (/^(Day|DAY|day)\s*\d|^\d+\s*日目/.test(l)) heads++;
+  }
+  return n >= 3 || (heads >= 1 && n >= 2);
+}
+
+function stationOf(t) {
+  return t.replace(/\(.*?\)/g, '').replace(/[発着]/g, '').replace(/^[\s→>]+|[\s→>。、]+$/g, '').replace(/\s+/g, ' ').trim();
+}
+
+export function parseSchedule(src, today = new Date()) {
+  const lines = src.split('\n').map((l) => l.trim());
+  const yearM = /(20\d{2})\s*[年/.\-]/.exec(src);
+  const docYear = yearM ? +yearM[1] : null;
+  const dateOf = (l) => { const d = findDate(l, today); if (d && docYear && !/20\d{2}/.test(l)) d.y = docYear; return d; };
+  let title = '';
+  for (const l of lines) { if (!l) continue; if (!findDate(l, today) && !findTimes(l).length && l.length <= 40) title = l; break; }
+
+  // 1) 時刻と内容の組（エントリー）を集める
+  let ctx = null, skip = false, pending = null;
+  const entries = [];
+  let reservedNote = '';
+  const push = (e) => { entries.push(e); return e; };
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l) continue;
+    const isHead = /^(Day|DAY|day)\s*\d|^\d+\s*日目/.test(l);
+    const dt = dateOf(l);
+    if (isHead || (dt && !TIME_ONLY.test(l) && !TIME_LEAD.test(l) && !/[~〜]\s*$/.test(l) && l.length <= 40 && !skip)) {
+      if (dt) ctx = dt;
+      skip = false; pending = null;
+      continue;
+    }
+    if (SKIP_HEAD.test(l) && l.length <= 14) { skip = true; pending = null; continue; }
+    if (skip) {
+      if (/予約済/.test(l)) reservedNote = (lines[i + 1] || '') + l;
+      continue;
+    }
+    if (/^[※＊*・•]/.test(l)) { const last = entries[entries.length - 1]; if (last) last.notes.push(l.replace(/^[※＊*・•]\s*/, '')); continue; }
+    let m;
+    if ((m = TIME_ONLY.exec(l))) {
+      pending = { date: ctx, t: { h: +m[1], mi: +m[2] }, approx: !!(m[3] || m[6]), alt: m[4] ? `${m[1]}:${m[2]}／${m[4]}:${m[5]}` : '', text: '', notes: [] };
+      continue;
+    }
+    if ((m = WORD_RE.exec(l))) { const w = WORD_TIME[m[1]]; pending = { date: ctx, t: { h: w[0], mi: w[1] }, word: m[1], approx: true, text: '', notes: [] }; continue; }
+    if (pending) { pending.text = l; push(pending); pending = null; continue; }
+    if ((m = TIME_LEAD.exec(l))) { push({ date: ctx, t: { h: +m[1], mi: +m[2] }, approx: !!m[3], end: m[4] ? { h: +m[4], mi: +m[5] } : null, text: m[6], notes: [] }); continue; }
+    if ((m = WORD_LEAD.exec(l))) { const w = WORD_TIME[m[1]]; push({ date: ctx, t: { h: w[0], mi: w[1] }, word: m[1], approx: true, text: m[2], notes: [] }); continue; }
+    const last = entries[entries.length - 1];
+    if (last && entries.length) last.notes.push(l);
+  }
+  if (!entries.length) return null;
+
+  // 2) エントリーを「発」「着」「宿」「予定」に分ける
+  for (const e of entries) {
+    const t = e.text;
+    const head = t.split('→')[0];
+    const paren = (/\(([^)]*)\)/.exec(head) || [])[1] || '';
+    const afterArrow = (/→\s*(.+)$/.exec(t) || [])[1] || '';
+    if (/宿泊|泊まる|チェックイン/.test(t) || (HOTEL_WORD.test(t) && !/[発着]/.test(t))) {
+      e.kind = 'hotel';
+      e.name = t.replace(/^.*?(宿泊|泊まる|チェックイン)\s*[:：]?\s*/, '').replace(/\(.*?\)/g, '').trim() || t;
+      continue;
+    }
+    const dep = /^(.*?)\s*発(?![a-z])/.exec(t), arr = /^(.*?)\s*着(?![a-z])/.exec(t);
+    if (dep && (!arr || dep[1].length <= arr[1].length)) {
+      e.kind = 'dep';
+      e.station = stationOf(dep[1]);
+      e.ride = paren;
+      // 「A 発 → B 8:32着」：同じ行に着く駅と時刻がある
+      const inl = /→\s*([^\d→]+?)\s*(\d{1,2}):(\d{2})\s*着/.exec(t);
+      if (inl) { e.inlineArr = { station: stationOf(inl[1]), t: { h: +inl[2], mi: +inl[3] } }; e.notes.push(t.slice(inl.index + inl[0].length).replace(/^[／/\d:着。、\s]+/, '')); }
+      continue;
+    }
+    if (arr) {
+      e.kind = 'arr';
+      e.station = stationOf(arr[1]);
+      e.info = paren;
+      e.stay = afterArrow.replace(/^[\s→]+/, '').trim();
+      continue;
+    }
+    e.kind = /食|ランチ|ディナー|レストラン|れすとらん|食堂|カフェ|居酒屋|寿司|ラーメン/.test(t + (e.word || '')) ? 'meal' : 'activity';
+  }
+
+  // 3) 予定を組み立てる
+  const items = [];
+  const at = (e, t = e.t) => iso(e.date, t);
+  const typeOf = (ride, a, b) => {
+    const all = `${ride} ${a} ${b}`;
+    if (AIR.test(ride) || (/空港/.test(a) && /空港/.test(b))) return 'flight';
+    if (/新幹線|のぞみ|ひかり|こだま|はやぶさ|はやて|やまびこ|なすの|つばさ|こまち|とき|たにがわ|かがやき|はくたか|つるぎ|あさま|みずほ|さくら|つばめ/.test(ride)) return 'shinkansen';
+    if (/バス|\d+\s*番(?!線)/.test(ride) || (/ターミナル|バス停/.test(all) && !/線\b|特急|快速|普通/.test(ride))) return 'bus';
+    if (/フェリー|船|航路/.test(all)) return 'ferry';
+    if (/地下鉄|メトロ|都営/.test(ride)) return 'subway';
+    if (/徒歩|歩いて/.test(ride)) return 'walk';
+    return 'train';
+  };
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.kind === 'dep') {
+      let a = e.inlineArr ? { station: e.inlineArr.station, t: e.inlineArr.t, date: e.date, info: '', stay: '', notes: [] } : null;
+      if (!a && entries[i + 1]?.kind === 'arr') a = entries[i + 1];
+      const type = typeOf(e.ride, e.station, a?.station || '');
+      const rideMain = e.ride.split(/[／/]/)[0].trim();
+      const rideRest = e.ride.split(/[／/]/).slice(1).join('／').trim();
+      const fl = /\b([A-Z0-9]{2})\s?(\d{2,4})\b/.exec(e.ride);
+      let endDate = a?.date || e.date;
+      if (a && endDate && dayKeyOf(endDate) === dayKeyOf(e.date) && a.t.h * 60 + a.t.mi < e.t.h * 60 + e.t.mi) endDate = addDays(endDate, 1);
+      const it = {
+        ...base(), type,
+        title: type === 'flight' && fl ? `${AIRLINES[fl[1]] || (/Peach/i.test(e.ride) ? 'Peach' : fl[1])} ${fl[1]}${fl[2]}便` : rideMain || (type === 'bus' ? 'バス' : ''),
+        number: fl ? `${fl[1]} ${fl[2]}` : '', operator: fl ? AIRLINES[fl[1]] || '' : '',
+        from: e.station, to: a?.station || '', start: at(e), end: a ? iso(endDate, a.t) : '',
+        notes: [rideRest, e.alt && `出発 ${e.alt}`, (e.approx || a?.approx) && '時刻は目安（頃）', a?.info, a && a.stay && !isStay(a.stay) && a.stay, ...e.notes, ...(a?.notes || [])].filter(Boolean).join('\n'),
+      };
+      if (!rideMain) {
+        const near = (x, y) => x && y && (x.includes(y) || y.includes(x));
+        const prev = [...items].reverse().find((p) => TRANSPORT_TYPES.has(p.type) && ((near(p.from, it.to) && near(p.to, it.from)) || near(p.to, it.from) || near(p.from, it.to)));
+        if (prev && prev.title && prev.type === it.type) it.title = prev.title;
+      }
+      items.push(it);
+      if (a && a.stay && isStay(a.stay)) {
+        // 着いた所で過ごす時間（次にそこを出るまで）
+        const nx = entries.slice(i + 2).find((x) => x.kind === 'dep');
+        const st = new Date(...ymdhm(endDate, a.t));
+        let en = nx && nx.date ? new Date(...ymdhm(nx.date, nx.t)) : null;
+        const hrs = /約?\s*(\d+(?:\.\d)?)\s*時間/.exec(a.stay), mins = /約?\s*(\d+)\s*分/.exec(a.stay);
+        if (!en || en - st > 6 * 3600e3 || en <= st) en = new Date(st.getTime() + (hrs ? +hrs[1] * 3600e3 : mins ? +mins[1] * 60000 : 3600e3));
+        items.push({ ...base(), type: /食|ラーメン|ランチ|ディナー/.test(a.stay) && !/散策|観光/.test(a.stay) ? 'meal' : 'activity', title: `${a.station} ${a.stay.replace(/\(.*?\)|（.*?）/g, '').replace(/^約?\s*\d+(\.\d)?\s*(時間|分)\s*/, '').replace(/^現地で/, '')}`.trim(), address: a.station, start: iso(endDate, a.t), end: toISO(en), notes: a.stay });
+      }
+      if (a === entries[i + 1]) i++;
+      continue;
+    }
+    if (e.kind === 'arr') {
+      // 発の無い「着」（移動の続き・メモ）
+      items.push({ ...base(), type: 'activity', title: `${e.station} 着`, address: e.station, start: at(e), notes: [e.info, e.stay, ...e.notes].filter(Boolean).join('\n') });
+      continue;
+    }
+    if (e.kind === 'hotel') { items.push({ ...base(), type: 'hotel', title: e.name, start: at(e), end: '', notes: e.notes.join('\n'), _date: e.date, _word: !!e.word || e.approx }); continue; }
+    const name = e.text.replace(/\(.*?\)/g, '').trim();
+    items.push({ ...base(), type: e.kind, title: name.slice(0, 40), start: at(e), end: e.end ? at(e, e.end) : '', notes: [(/\(([^)]*)\)/.exec(e.text) || [])[1], e.approx && e.word && `時刻は目安（${e.word}）`, ...e.notes].filter(Boolean).join('\n') });
+  }
+
+  // 4) 宿のチェックイン・アウトを、その日の最後の移動と翌日の最初の予定から決める
+  for (const h of items.filter((x) => x.type === 'hotel' && x._date)) {
+    const d = h._date, dk = dayKeyOf(d);
+    const sameDay = items.filter((x) => x !== h && x.start.startsWith(dk) && x.type !== 'hotel');
+    const lastEnd = sameDay.map((x) => x.end || toISO(new Date(parseIso(x.start).getTime() + 60 * 60000))).sort().pop();
+    let ci = h._word ? null : parseIso(h.start);
+    if (!ci) {
+      const le = lastEnd ? parseIso(lastEnd) : null;
+      ci = le ? new Date(Math.ceil((le.getTime() + 30 * 60000) / 1800000) * 1800000) : new Date(d.y, d.mo - 1, d.d, 15, 0);
+      const fifteen = new Date(d.y, d.mo - 1, d.d, 15, 0);
+      if (ci < fifteen) ci = fifteen;
+    }
+    const nd = addDays(d, 1), nk = dayKeyOf(nd);
+    const next = items.filter((x) => x.start.startsWith(nk) && x.type !== 'hotel').sort((a, b) => a.start.localeCompare(b.start));
+    let co = new Date(nd.y, nd.mo - 1, nd.d, 10, 0);
+    const back = next.find((x) => /宿へ戻|ホテルへ戻|宿に戻|荷物/.test(x.notes + x.title));
+    if (!back && next[0]) { const f = parseIso(next[0].start); const c = new Date(f.getTime() - 30 * 60000); if (c < co) co = c; }
+    if (back) { const dep = next.find((x) => x.start > back.start && TRANSPORT_TYPES.has(x.type) && x !== back && parseIso(x.start) - parseIso(back.start) > 30 * 60000); if (dep) { const c = new Date(parseIso(dep.start).getTime() - 20 * 60000); if (c < co) co = c; } }
+    h.start = toISO(ci); h.end = toISO(co);
+    h.notes = ['チェックイン・アウトの時刻は目安', h.notes].filter(Boolean).join('\n');
+    delete h._date; delete h._word;
+  }
+  // 5) 「予約済み」の書き込みを反映
+  if (reservedNote) {
+    for (const it of items) {
+      if (it.type === 'flight' && /航空券|飛行機|フライト|便/.test(reservedNote)) it.reserved = true;
+      if (it.type === 'hotel' && /宿|ホテル|宿泊/.test(reservedNote)) it.reserved = true;
+      if (['train', 'shinkansen'].includes(it.type) && /指定席|特急|新幹線|切符|きっぷ/.test(reservedNote)) it.reserved = true;
+      if (it.type === 'bus' && /バス/.test(reservedNote)) it.reserved = true;
+    }
+  }
+  items.title = title;
+  return items;
+}
+const TRANSPORT_TYPES = new Set(['shinkansen', 'train', 'subway', 'bus', 'flight', 'ferry', 'taxi', 'walk']);
+const isStay = (s) => /散策|観光|滞在|見学|ラーメン|食|買物|買い物|休憩|過ごす|巡り|参拝|入浴|温泉|約\s*\d+\s*(時間|分)/.test(s);
+const dayKeyOf = (d) => `${d.y}-${pad(d.mo)}-${pad(d.d)}`;
+const ymdhm = (d, t) => [d.y, d.mo - 1, d.d, t.h, t.mi];
+const toISO = (x) => `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}T${pad(x.getHours())}:${pad(x.getMinutes())}`;
+const parseIso = (s) => { const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(s || ''); return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null; };
+
 // 文章をまとまり（予約1件ずつ）に分ける
 function sections(s) {
   const parts = s.split(/\n\s*(?:[-=─━_*]{3,}|【[^】]*(?:予約|便|宿泊|ホテル|フライト|行程|往路|復路|旅程)[^】]*】)\s*\n|\n{3,}/);
@@ -309,6 +518,11 @@ function sections(s) {
 
 export function parseAny(text, today = new Date()) {
   const s = normalize(text);
+  // 旅程表の形（時刻の行が並ぶ・Day見出し）なら、まとめて時系列として読む
+  if (looksLikeSchedule(s)) {
+    const sc = parseSchedule(s, today);
+    if (sc && sc.length) return sc;
+  }
   const out = [];
   const tryAll = (part) => {
     // 宿と飛行機は、メール全体を1件として読むことが多い

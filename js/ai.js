@@ -158,6 +158,7 @@ export function openPaste({ alternate = false, targetId = null } = {}) {
             raw = r.items; name = r.trip_name;
           } else {
             raw = parseAny(text);
+            name = raw.title || '';
           }
           const items = raw.map((x) => {
             const it = { id: uid(), type: TYPES[x.type] ? x.type : 'other' };
@@ -265,6 +266,9 @@ async function run(body, close, files, mode, target, hint) {
 
 // 読み取り結果の確認
 export function review(items, tripName, target) {
+  const cur = currentTrip();
+  // 旅の名前が読めた・今の旅が空でない時は、新しい旅として追加するのを初めの選択にする
+  let dest = target || (cur && !cur.items.length) ? 'cur' : tripName || !cur ? 'new' : 'cur';
   items.sort((a, b) => (a.start || '9').localeCompare(b.start || '9'));
   const sel = new Set(items.map((i) => i.id));
   sheet({
@@ -272,8 +276,11 @@ export function review(items, tripName, target) {
     onRight: () => {
       const chosen = items.filter((i) => sel.has(i.id));
       if (!chosen.length) return;
-      const trip = ensureTrip(tripName || '新しい旅');
-      if (trip.items.length === 0 && tripName && trip.name === '新しい旅') trip.name = tripName;
+      let trip;
+      if (dest === 'new' || !currentTrip()) {
+        trip = { id: uid(), name: tripName || '新しい旅', items: [] };
+        store.data.trips.push(trip); store.data.currentTrip = trip.id;
+      } else trip = ensureTrip();
       const mains = chosen.filter((i) => !i._alt);
       const alts = chosen.filter((i) => i._alt);
       const clean = (i) => { const { _alt, _group, ...r } = i; return r; };
@@ -300,13 +307,15 @@ export function review(items, tripName, target) {
     },
     build(body) {
       const draw = () => {
-        body.innerHTML = `<div class="section-foot" style="margin:0 4px 10px">タップで直せます。追加しないものはチェックを外してください。</div>
+        body.innerHTML = `${cur ? `<div class="field-label" style="margin-top:4px">追加する先</div><div class="segment" id="rv-dest"><button data-v="new" class="${dest === 'new' ? 'active' : ''}">新しい旅として</button><button data-v="cur" class="${dest === 'cur' ? 'active' : ''}">表示中の旅に追加</button></div>` : ''}
+          <div class="section-foot" style="margin:0 4px 10px">${dest === 'new' && tripName ? `旅の名前：${esc(tripName)}<br>` : ''}${items.length}件見つかりました。タップで直せます。追加しないものはチェックを外してください。</div>
           ${items.map((it) => { const T = TYPES[it.type] || TYPES.other; const s = parseLocal(it.start), e = parseLocal(it.end); return `
           <div class="ev" style="--c:${T.color};margin-bottom:10px" data-id="${it.id}">
             <div class="top"><button class="check ${sel.has(it.id) ? 'on' : ''}" data-chk>${sel.has(it.id) ? I.check : ''}</button><div class="type-ico">${I[T.icon]}</div><div class="title">${esc(it.title || T.name)}</div>${it._alt ? '<span class="badge ng">予備</span>' : ''}${it.reserved ? '<span class="badge ok">予約済み</span>' : ''}</div>
             <div class="small muted" style="margin-top:6px" data-edit>${s ? mdw(s) + ' ' + hm(s) : '日時不明'}${e ? ' → ' + (s && dayKey(e) !== dayKey(s) ? mdw(e) + ' ' : '') + hm(e) : ''}　${esc(it.from || '')}${it.to ? ' → ' + esc(it.to) : ''}${it.platform ? '　' + esc(it.platform) : ''}${it.seat ? '　座席' + esc(it.seat) : ''}</div>
             <button class="link-btn small" data-edit>${I.edit} 直す</button>
           </div>`; }).join('')}`;
+        if ($('#rv-dest', body)) segment($('#rv-dest', body), (v) => { dest = v; });
         $$('[data-chk]', body).forEach((b) => b.onclick = () => { const id = b.closest('[data-id]').dataset.id; sel.has(id) ? sel.delete(id) : sel.add(id); haptic(); draw(); });
         $$('[data-edit]', body).forEach((b) => b.onclick = () => {
           const it = items.find((x) => x.id === b.closest('[data-id]').dataset.id);

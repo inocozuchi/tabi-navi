@@ -1,5 +1,6 @@
 // 貼り付け解析のテスト: node tests/parse.test.mjs
 import { parseAny } from '../js/parse.js';
+import fs from 'node:fs';
 const today = new Date(2026, 9, 1);
 let pass = 0, fail = 0;
 const check = (name, items, expect) => {
@@ -125,6 +126,45 @@ JR新幹線のぞみ1号 博多行
 08:27 着
 新大阪
 運賃 14,720円`, today), [{ type: 'shinkansen', from: '東京', to: '新大阪', start: '2026-10-12T06:00', end: '2026-10-12T08:27', platform: '14番線' }]);
+
+{
+  const r = parseAny(fs.readFileSync(new URL('./samples/wakkanai.txt', import.meta.url), 'utf8'), today);
+  check('旅程表（稚内・宗谷岬の旅）', r, [
+    { type: 'flight', number: 'MM 579', from: '成田空港', to: '新千歳空港', start: '2026-10-27T18:10', end: '2026-10-27T20:00', reserved: true },
+    { type: 'hotel', title: 'BIZCOURT CABINすすきの', start: '2026-10-27T20:30', end: '2026-10-28T07:00', reserved: true },
+    { type: 'train', title: '特急宗谷', from: '札幌', to: '稚内', start: '2026-10-28T07:30', end: '2026-10-28T12:42' },
+    { type: 'bus', from: '稚内駅前ターミナル', to: '宗谷岬', start: '2026-10-28T13:30', end: '2026-10-28T14:20' },
+    { type: 'activity', title: '宗谷岬', start: '2026-10-28T14:20', end: '2026-10-28T15:20' },
+    { type: 'bus', from: '宗谷岬', to: '稚内駅前ターミナル', start: '2026-10-28T15:20', end: '2026-10-28T16:18' },
+    { type: 'activity', title: '稚内港北防波堤ドーム', start: '2026-10-28T17:00' },
+    { type: 'meal', title: '夢広場', start: '2026-10-28T18:30' },
+    { type: 'hotel', title: 'ゲストハウス モシリパ', start: '2026-10-28T20:00', end: '2026-10-29T10:00' },
+    { type: 'bus', from: '稚内駅前ターミナル', to: 'ノシャップ', start: '2026-10-29T07:19', end: '2026-10-29T07:29' },
+    { type: 'activity', title: 'ノシャップ', start: '2026-10-29T07:29' },
+    { type: 'bus', from: 'ノシャップ', to: '駅前ターミナル', start: '2026-10-29T08:19', end: '2026-10-29T08:32' },
+    { type: 'train', from: '稚内', to: '名寄', start: '2026-10-29T10:29', end: '2026-10-29T14:17' },
+    { type: 'train', title: '快速なよろ', from: '名寄', to: '旭川', start: '2026-10-29T14:42', end: '2026-10-29T15:55' },
+    { type: 'activity', title: '旭川', start: '2026-10-29T15:55', end: '2026-10-29T17:00' },
+    { type: 'train', title: '特急カムイ', from: '旭川', to: '札幌', start: '2026-10-29T17:00', end: '2026-10-29T18:25' },
+    { type: 'train', title: '特急すずらん10号', from: '札幌', to: '南千歳', start: '2026-10-29T19:14', end: '2026-10-29T19:48' },
+    { type: 'train', title: '快速エアポート168号', from: '南千歳', to: '新千歳空港', start: '2026-10-29T19:59', end: '2026-10-29T20:03' },
+    { type: 'flight', number: 'NH 084', from: '新千歳空港', to: '羽田空港', start: '2026-10-29T21:25', end: '2026-10-29T23:10', reserved: true },
+  ]);
+  if (r.title !== 'どこパスで行く 稚内・宗谷岬の旅') { fail++; console.log('FAIL 旅の名前', r.title); } else pass++;
+}
+
+check('1行ずつの旅程表', parseAny(`大阪日帰り 11/3
+8:00 新大阪 発（のぞみ200号）
+8:15 京都 着
+9:00 清水寺 参拝
+12:00頃 昼食 湯豆腐
+15:30 京都 発（JR京都線 新快速）
+16:00 大阪 着`, today), [
+  { type: 'shinkansen', title: 'のぞみ200号', from: '新大阪', to: '京都', start: '2026-11-03T08:00', end: '2026-11-03T08:15' },
+  { type: 'activity', title: '清水寺', start: '2026-11-03T09:00' },
+  { type: 'meal', start: '2026-11-03T12:00' },
+  { type: 'train', from: '京都', to: '大阪', start: '2026-11-03T15:30', end: '2026-11-03T16:00' },
+]);
 
 console.log(`\n${pass} PASS / ${fail} FAIL`);
 process.exit(fail ? 1 : 0);
