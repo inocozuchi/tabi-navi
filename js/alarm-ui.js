@@ -87,8 +87,11 @@ export function bindAlarm() {
 }
 
 // ===== 編集 =====
-async function editAlarm(orig) {
-  const a = structuredClone(orig || newAlarm());
+// 旅程から呼ぶ：時刻とラベルを入れた状態で新しいアラームを開く
+export function alarmFor(tmpl) { editAlarm(null, tmpl); }
+
+async function editAlarm(orig, tmpl) {
+  const a = structuredClone(orig || { ...newAlarm(), ...(tmpl || {}) });
   const files = await listFiles();
   let soundLabel = await soundName(a.soundId);
   const isNew = !orig;

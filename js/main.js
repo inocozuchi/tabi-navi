@@ -2,7 +2,7 @@
 import { $, $$, store, onSave, haptic, toast } from './util.js';
 import { engine } from './alarm.js';
 import { renderAlarm, bindAlarm } from './alarm-ui.js';
-import { renderHome, bindHome, tickHome } from './home.js';
+import { renderTools, bindTools, bindStatus } from './home.js';
 import { renderTrip, bindTrip, tickTrip, currentTrip } from './trip.js';
 import { renderTransit, showTransitTab } from './transit.js';
 import { renderSettings, applyTheme } from './settings.js';
@@ -10,11 +10,23 @@ import { checkReminders } from './tools.js';
 import { startSocial, pushTrip, social } from './social.js';
 
 store.load();
+
+// iPhone のホーム画面から開いた時、画面の高さが短く計算されて下がずれることがあるので、実際の画面の高さを使う
+function fitHeight() {
+  const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+  let h = window.innerHeight;
+  if (standalone && screen.height && Math.abs(window.innerWidth - Math.min(screen.width, screen.height)) < 2) h = Math.max(h, screen.height);
+  else if (standalone && screen.width && Math.abs(window.innerWidth - Math.max(screen.width, screen.height)) < 2) h = Math.max(h, Math.min(screen.width, screen.height));
+  document.documentElement.style.setProperty('--app-h', h + 'px');
+}
+fitHeight();
+addEventListener('resize', fitHeight);
+addEventListener('orientationchange', () => setTimeout(fitHeight, 300));
 applyTheme();
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 
-let tab = 'home';
-const renders = { home: renderHome, trip: renderTrip, alarm: renderAlarm, transit: renderTransit, settings: renderSettings };
+let tab = 'trip';
+const renders = { trip: renderTrip, alarm: renderAlarm, transit: renderTransit, tools: renderTools, settings: renderSettings };
 
 function go(t, sub) {
   tab = t;
@@ -29,7 +41,8 @@ $$('#tabbar button').forEach((b) => b.addEventListener('click', () => {
   haptic(); go(b.dataset.tab);
 }));
 
-bindHome(go);
+bindStatus(go);
+bindTools();
 bindTrip();
 bindAlarm();
 engine.init();
@@ -47,11 +60,10 @@ onSave((remote) => {
   }
 });
 for (const t of store.data.trips) hashes.set(t.id, hashOf(t));
-social.listeners.add(() => { if (tab === 'home') renderHome(); });
+social.listeners.add(() => { if (tab === 'tools') renderTools(); });
 
 // 毎秒：時計・旅程の「いま」・リマインド
 setInterval(() => {
-  if (tab === 'home') tickHome();
   if (tab === 'trip') tickTrip();
   const n = new Date();
   if (n.getSeconds() === 0) {
@@ -62,7 +74,7 @@ setInterval(() => {
 }, 1000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { renders[tab](); checkReminders(); } });
 
-go('home');
+go('trip');
 checkReminders();
 startSocial();
 

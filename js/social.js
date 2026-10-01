@@ -315,7 +315,7 @@ function openChat() {
     build(body) {
       body.style.paddingBottom = '0';
       body.innerHTML = `<div id="chat-list" style="padding-bottom:90px"></div>
-        <div style="position:fixed;left:0;right:0;bottom:0;padding:8px 10px calc(var(--sab) + 8px);background:var(--bar);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border-top:.5px solid var(--sep);display:flex;gap:8px;align-items:center">
+        <div style="position:absolute;left:0;right:0;bottom:0;padding:8px 10px calc(max(var(--sab), 14px) + 8px);background:var(--bar);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border-top:.5px solid var(--sep);display:flex;gap:8px;align-items:center">
           <button class="icon-btn" id="ch-loc" title="いまの場所を送る">${I.locate}</button>
           <button class="icon-btn" id="ch-next" title="次の予定を送る">${I.clock}</button>
           <input type="text" id="ch-in" placeholder="メッセージ" enterkeyhint="send" style="flex:1;height:38px;border-radius:19px;border:.5px solid var(--sep);background:var(--bg2);padding:0 14px;font-size:16px">

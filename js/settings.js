@@ -28,9 +28,17 @@ export function renderSettings() {
     <div class="section-title">AI（スクショの読み取り・旅程の提案）</div>
     <div class="list">
       <div class="row icon-row"><span class="ico" style="background:var(--indigo)">${I.key}</span><div style="flex:none">API キー</div><input type="password" id="st-key" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"></div>
-      <div class="row icon-row"><span class="ico" style="background:var(--purple)">${I.sparkles}</span><div class="grow">モデル</div><select id="st-model">${[['claude-opus-5-5', 'Claude Opus 5.5（高精度）'], ['claude-sonnet-5-5', 'Claude Sonnet 5.5（速い・安い）'], ['claude-haiku-4-5', 'Claude Haiku 4.5（最安）']].map(([v, n]) => `<option value="${v}" ${s.aiModel === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <div class="row icon-row"><span class="ico" style="background:var(--purple)">${I.sparkles}</span><div class="grow">モデル</div><select id="st-model">${[['claude-opus-5-5', 'Opus 5.5（高精度）'], ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-haiku-4-5', 'Haiku 4.5（最安）']].map(([v, n]) => `<option value="${v}" ${s.aiModel === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
     </div>
-    <div class="section-foot">Claude の API キー（<a href="https://console.anthropic.com/" target="_blank">console.anthropic.com</a> で作成・従量課金）を入れると、スクショの読み取りがとても正確になり、旅程の提案も使えます。キーはこの端末の中にだけ保存されます。キーが無くても、端末の中での文字読み取りで使えます。</div>
+    <div class="section-foot">Claude の API キーを入れると、スクショや文章の読み取りがとても正確になり、旅程の提案も使えます。キーは <a href="https://console.anthropic.com/" target="_blank">console.anthropic.com</a> で作ります（Claude の Pro プランとは別の、使った分だけの支払い）。キーはこの端末の中にだけ保存されます。</div>
+    <div class="list" style="margin-top:10px">
+      <div class="row"><div class="grow small">目安の料金（スクショ1枚）</div></div>
+      <div class="row"><div class="grow small">Haiku 4.5</div><span class="val small">約1円</span></div>
+      <div class="row"><div class="grow small">Sonnet 5.5</div><span class="val small">約2〜3円</span></div>
+      <div class="row"><div class="grow small">Opus 5.5</div><span class="val small">約4〜8円</span></div>
+      <div class="row"><div class="grow small">文字の貼り付け（1回）</div><span class="val small">上の半分ほど</span></div>
+    </div>
+    <div class="section-foot">キーが無くても、文字の貼り付け取り込みは端末の中だけで無料で動きます。スクショは iPhone の「写真」でテキスト認識 →「すべてをコピー」して貼り付けるのがおすすめです。</div>
     <div class="section-title">アラーム</div>
     <div class="list">
       <button class="row icon-row" id="st-alarmhelp"><span class="ico" style="background:var(--orange)">${I.headphones}</span><div class="grow">アラームのしくみと注意</div><span class="chev">${I.chev}</span></button>

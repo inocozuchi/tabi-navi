@@ -1,8 +1,9 @@
 // スクリーンショットから旅程をつくる
 //  ・Claude API キーがある時：画像を Claude に読ませて、予定を構造化して返してもらう（高精度）
 //  ・キーが無い時：端末の中で文字を読み取り（Tesseract.js）、簡単な規則で予定に分ける（精度は控えめ）
-import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, shrinkImage, blobToBase64, blobs, pad, toLocalISO, segment } from './util.js';
+import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, shrinkImage, blobToBase64, blobs, pad, toLocalISO, segment } from './util.js';
 import { currentTrip, ensureTrip, renderTrip, editItem, events } from './trip.js';
+import { parseAny } from './parse.js';
 
 const TYPE_KEYS = Object.keys(TYPES);
 const str = { type: 'string' };
@@ -61,7 +62,8 @@ export async function callClaude({ system, content, schema, effort = 'medium' })
     model: s.aiModel || 'claude-opus-5-5',
     max_tokens: 16000,
     system,
-    output_config: { effort, format: { type: 'json_schema', schema } },
+    // Haiku 4.5 は effort を受け付けないので付けない
+    output_config: /haiku/.test(s.aiModel || '') ? { format: { type: 'json_schema', schema } } : { effort, format: { type: 'json_schema', schema } },
     messages: [{ role: 'user', content }],
   };
   let res;
@@ -118,59 +120,60 @@ export async function ocr(blob, onProg) {
   const r = await T.recognize(blob, 'jpn+eng', { logger: (m) => m.status === 'recognizing text' && onProg?.(m.progress) });
   return r.data.text;
 }
-export function parseText(text, imgNo = 1) {
-  const z2h = (s) => s.replace(/[０-９Ａ-Ｚａ-ｚ：／．－]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
-  const t = z2h(text).replace(/[ \t]+/g, ' ');
-  const lines = t.split(/\n/).map((l) => l.trim()).filter(Boolean);
-  const now = new Date();
-  let y = now.getFullYear(), mo = now.getMonth() + 1, d = now.getDate();
-  const dm = /(\d{4})[年/.-]\s?(\d{1,2})[月/.-]\s?(\d{1,2})/.exec(t) || /(\d{1,2})月\s?(\d{1,2})日/.exec(t) || /(\d{1,2})\/(\d{1,2})\s?\(/.exec(t);
-  if (dm) {
-    if (dm.length === 4) [y, mo, d] = [+dm[1], +dm[2], +dm[3]];
-    else { mo = +dm[1]; d = +dm[2]; if (new Date(y, mo - 1, d) < new Date(now.getFullYear(), now.getMonth(), now.getDate())) y++; }
-  }
-  const at = (h, m) => `${y}-${pad(mo)}-${pad(d)}T${pad(h)}:${pad(m)}`;
-  const base = { from: '', to: '', start: '', end: '', operator: '', number: '', platform: '', seat: '', confirmation: '', cost: '', address: '', notes: '', reserved: /予約(完了|確認|番号)|確認番号|e-?チケット|Confirmation/i.test(t), is_alternate: false, route_group: 'main', source_image: imgNo };
-  const conf = /(予約番号|確認番号|予約ID|Confirmation(?: No\.?| number)?)[:：\s]*([A-Z0-9-]{4,})/i.exec(t);
-  if (conf) base.confirmation = conf[2];
-  const price = /([0-9,]{3,})\s?円|¥\s?([0-9,]{3,})/.exec(t);
-  // ホテル
-  if (/チェックイン|宿泊|ホテル|旅館|ゲストハウス|ホステル|カプセル|Check-?in/i.test(t)) {
-    const name = lines.find((l) => /ホテル|旅館|ゲストハウス|ホステル|イン|カプセル|Hotel|Hostel|Inn/i.test(l) && l.length < 40) || '宿';
-    const ci = /チェックイン[^0-9]{0,8}(\d{1,2}):(\d{2})/.exec(t), co = /チェックアウト[^0-9]{0,8}(\d{1,2}):(\d{2})/.exec(t);
-    const dates = [...t.matchAll(/(\d{1,2})月\s?(\d{1,2})日/g)];
-    let endD = dates[1] ? { mo: +dates[1][1], d: +dates[1][2] } : { mo, d: d + 1 };
-    const e = new Date(y, endD.mo - 1, endD.d);
-    return [{ ...base, type: 'hotel', title: name, start: at(ci ? +ci[1] : 15, ci ? +ci[2] : 0), end: `${e.getFullYear()}-${pad(e.getMonth() + 1)}-${pad(e.getDate())}T${co ? pad(co[1]) + ':' + co[2] : '10:00'}`, cost: price ? (price[1] || price[2]) + '円' : '', notes: ci && co ? '' : '時刻は推定' }];
-  }
-  // 飛行機
-  const fl = /\b([A-Z]{2}|[A-Z]\d|\d[A-Z])\s?(\d{2,4})\b/.exec(t);
-  if (fl && /便|搭乗|出発|フライト|Flight|空港/i.test(t)) {
-    const times = [...t.matchAll(/(\d{1,2}):(\d{2})/g)];
-    const airports = lines.filter((l) => /空港|Airport|\([A-Z]{3}\)/.test(l)).map((l) => l.replace(/\d{1,2}:\d{2}/g, '').trim());
-    return [{ ...base, type: 'flight', title: `${fl[1]} ${fl[2]}`, number: `${fl[1]} ${fl[2]}`, from: airports[0] || '', to: airports[1] || '', start: times[0] ? at(+times[0][1], +times[0][2]) : '', end: times[1] ? at(+times[1][1], +times[1][2]) : '' }];
-  }
-  // 乗換案内：時刻のある行を「時刻＋駅」として拾い、隣どうしを区間にする
-  const pts = [];
-  const lineNames = [];
-  for (const l of lines) {
-    const m = /^(\d{1,2}):(\d{2})\s*(発|着)?\s*(.*)$/.exec(l) || /^(.*?)\s*(\d{1,2}):(\d{2})\s*(発|着)?$/.exec(l);
-    if (m && l.length < 40) {
-      const first = /^\d/.test(l);
-      const h = +(first ? m[1] : m[2]), mi = +(first ? m[2] : m[3]);
-      const name = (first ? m[4] : m[1]).replace(/[発着]$/, '').replace(/\d+番線.*/, '').trim();
-      pts.push({ h, mi, name, plat: (/(\d+番線)/.exec(l) || [])[1] || '' });
-    } else if (/^\d+番線/.test(l)) { if (pts.length) pts[pts.length - 1].plat = (/(\d+番線)/.exec(l) || [])[1]; }
-    else if (/線|新幹線|のぞみ|ひかり|こだま|はやぶさ|特急|快速|普通|バス|メトロ|地下鉄|ライン/.test(l) && l.length < 30) lineNames.push(l);
-  }
-  const out = [];
-  for (let i = 0; i + 1 < pts.length; i += 2) {
-    const a = pts[i], b = pts[i + 1];
-    const ln = lineNames[out.length] || '';
-    out.push({ ...base, type: /新幹線|のぞみ|ひかり|こだま|はやぶさ|みずほ|さくら|かがやき/.test(ln) ? 'shinkansen' : /バス/.test(ln) ? 'bus' : /メトロ|地下鉄/.test(ln) ? 'subway' : 'train', title: ln, from: a.name, to: b.name, platform: a.plat, start: at(a.h, a.mi), end: at(b.h, b.mi) });
-  }
-  if (out.length && price) out[0].cost = (price[1] || price[2]) + '円';
-  return out;
+// ===== 文字を貼り付けて取り込む =====
+// 予約メール・乗換案内の結果・メモなど、形式がバラバラでも自動で見分ける
+export function openPaste({ alternate = false, targetId = null } = {}) {
+  const s = store.data.settings;
+  let mode = alternate ? 'alt' : 'main';
+  let target = targetId;
+  let useAI = !!s.apiKey;
+  sheet({
+    title: '文字から取り込む', left: 'キャンセル',
+    build(body, close) {
+      body.innerHTML = `
+        <div class="field-label">取り込む文字</div>
+        <textarea id="ps-text" class="field" rows="9" placeholder="ここに貼り付け&#10;&#10;例）予約完了メール、乗換案内の結果、&#10;「10/12 9:30 伏見稲荷」のようなメモ&#10;何件まとめて貼ってもOK"></textarea>
+        <div class="hstack" style="margin-top:8px"><button class="btn small secondary" id="ps-clip">${I.copy}クリップボードから貼り付け</button><button class="btn small secondary" id="ps-clear">消す</button></div>
+        <div class="field-label">取り込み方</div>
+        <div class="segment" id="ps-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
+        ${s.apiKey ? `<div class="list"><div class="row"><div class="grow">AI（Claude）で読む<div class="sub">オフにすると端末の中だけで読み取ります（無料）</div></div><label class="switch"><input type="checkbox" id="ps-ai" ${useAI ? 'checked' : ''}><span></span></label></div></div>` : ''}
+        <div class="section-foot">💡 写真やスクショの文字は、iPhoneの「写真」アプリで画像を開き、右下の<b>テキスト認識ボタン</b>→「すべてをコピー」でコピーできます（無料・高精度）。</div>
+        <div style="margin-top:14px"><button class="btn" id="ps-go">${I.sparkles}読み取る</button></div>
+        <div id="ps-prog" style="margin-top:12px"></div>`;
+      const ta = $('#ps-text', body);
+      $('#ps-clip', body).onclick = async () => { try { ta.value = await navigator.clipboard.readText(); toast('貼り付けました'); } catch { ta.focus(); toast('長押しして「ペースト」を選んでください'); } };
+      $('#ps-clear', body).onclick = () => { ta.value = ''; ta.focus(); };
+      segment($('#ps-mode', body), (v) => { mode = v; });
+      $('#ps-ai', body)?.addEventListener('change', (e) => { useAI = e.target.checked; });
+      $('#ps-go', body).onclick = async (e) => {
+        const text = ta.value.trim();
+        if (!text) { toast('文字を貼り付けてください'); return; }
+        const prog = $('#ps-prog', body);
+        e.target.disabled = true;
+        try {
+          let raw, name = '';
+          if (useAI && s.apiKey) {
+            prog.innerHTML = '<div class="hstack small"><span class="spinner"></span>AIが読み取っています…</div>';
+            const r = await callClaude({ system: SYSTEM, content: [{ type: 'text', text: `${todayText()}${mode === 'alt' ? 'これは「予備ルート」です。すべて is_alternate=true にしてください。' : ''}\n次の文章から旅程の予定を取り出してください（source_image は 0）。\n---\n${text}` }], schema: SCHEMA, effort: 'low' });
+            raw = r.items; name = r.trip_name;
+          } else {
+            raw = parseAny(text);
+          }
+          const items = raw.map((x) => {
+            const it = { id: uid(), type: TYPES[x.type] ? x.type : 'other' };
+            for (const k of ['title', 'from', 'to', 'start', 'end', 'operator', 'number', 'platform', 'seat', 'confirmation', 'cost', 'address', 'notes', 'phone']) it[k] = (x[k] || '').trim();
+            it.reserved = !!x.reserved; it.imgs = [];
+            it._alt = mode === 'alt' || !!x.is_alternate; it._group = x.route_group || 'main';
+            return it;
+          });
+          if (!items.length) { prog.innerHTML = '<div class="small" style="color:var(--orange)">予定を見つけられませんでした。日付と時刻が入っているか確かめてください。</div>'; e.target.disabled = false; return; }
+          close();
+          setTimeout(() => review(items, name, target), 300);
+        } catch (err) { prog.innerHTML = `<div class="small" style="color:var(--red)">${esc(friendlyError(err))}</div>`; e.target.disabled = false; }
+      };
+      setTimeout(() => ta.focus(), 450);
+    },
+  });
 }
 
 // ===== 取り込み画面 =====
@@ -233,7 +236,7 @@ async function run(body, close, files, mode, target, hint) {
       for (let i = 0; i < small.length; i++) {
         say(`文字を読み取っています… ${i + 1}/${small.length}`, i / small.length);
         const text = await ocr(small[i], (p) => say(`文字を読み取っています… ${i + 1}/${small.length}`, (i + p) / small.length));
-        items.push(...parseText(text, i + 1));
+        items.push(...parseAny(text).map((x) => ({ ...x, is_alternate: false, route_group: 'main', source_image: i + 1 })));
       }
       result = { trip_name: '', items };
     }
@@ -262,6 +265,7 @@ async function run(body, close, files, mode, target, hint) {
 
 // 読み取り結果の確認
 export function review(items, tripName, target) {
+  items.sort((a, b) => (a.start || '9').localeCompare(b.start || '9'));
   const sel = new Set(items.map((i) => i.id));
   sheet({
     title: '読み取り結果', right: '旅程に追加',
@@ -300,7 +304,7 @@ export function review(items, tripName, target) {
           ${items.map((it) => { const T = TYPES[it.type] || TYPES.other; const s = parseLocal(it.start), e = parseLocal(it.end); return `
           <div class="ev" style="--c:${T.color};margin-bottom:10px" data-id="${it.id}">
             <div class="top"><button class="check ${sel.has(it.id) ? 'on' : ''}" data-chk>${sel.has(it.id) ? I.check : ''}</button><div class="type-ico">${I[T.icon]}</div><div class="title">${esc(it.title || T.name)}</div>${it._alt ? '<span class="badge ng">予備</span>' : ''}${it.reserved ? '<span class="badge ok">予約済み</span>' : ''}</div>
-            <div class="small muted" style="margin-top:6px" data-edit>${s ? mdw(s) + ' ' + hm(s) : '日時不明'}${e ? ' → ' + hm(e) : ''}　${esc(it.from || '')}${it.to ? ' → ' + esc(it.to) : ''}${it.platform ? '　' + esc(it.platform) : ''}${it.seat ? '　座席' + esc(it.seat) : ''}</div>
+            <div class="small muted" style="margin-top:6px" data-edit>${s ? mdw(s) + ' ' + hm(s) : '日時不明'}${e ? ' → ' + (s && dayKey(e) !== dayKey(s) ? mdw(e) + ' ' : '') + hm(e) : ''}　${esc(it.from || '')}${it.to ? ' → ' + esc(it.to) : ''}${it.platform ? '　' + esc(it.platform) : ''}${it.seat ? '　座席' + esc(it.seat) : ''}</div>
             <button class="link-btn small" data-edit>${I.edit} 直す</button>
           </div>`; }).join('')}`;
         $$('[data-chk]', body).forEach((b) => b.onclick = () => { const id = b.closest('[data-id]').dataset.id; sel.has(id) ? sel.delete(id) : sel.add(id); haptic(); draw(); });

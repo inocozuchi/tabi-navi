@@ -1,6 +1,7 @@
 // 旅程：時系列の一覧・予約チェック・予備ルート・編集
 import { $, $$, esc, uid, store, sheet, page, toast, confirmBox, switchHTML, haptic, I, TYPES, TRANSPORT, parseLocal, hm, dayKey, mdw, dur, countdown, yen, copyText, blobs, download, segment } from './util.js';
-import { openImport } from './ai.js';
+import { openImport, openPaste } from './ai.js';
+import { heroHTML, drawWeather, statusHTML, afterStatus, dayWeather, tickHome, tickStatus } from './home.js';
 import { transitLinks, mapsSearchUrl, spotSearch } from './transit.js';
 import { icsDownload } from './tools.js';
 
@@ -54,11 +55,13 @@ export function renderTrip() {
   const t = currentTrip();
   const now = new Date();
   if (!t) {
-    el().innerHTML = `<div class="large-title"><h1>旅程</h1></div>
-      <div class="empty">${I.route}<div style="font-size:19px;font-weight:600;color:var(--label);margin-bottom:6px">旅程をつくりましょう</div>
-      乗換案内・ホテル・飛行機の予約画面のスクリーンショットを貼ると、自動で時系列に並べます。</div>
-      <div class="stack"><button class="btn" data-act="import">${I.sparkles}スクショから旅程をつくる</button>
-      <button class="btn secondary" data-act="add">${I.edit}手入力で追加</button></div>`;
+    el().innerHTML = `${heroHTML()}${statusHTML()}
+      <div class="card" style="text-align:center;padding:24px 18px"><div style="font-size:40px">🧳</div><div class="card-title" style="font-size:20px;margin:6px 0 4px">旅程をつくりましょう</div>
+      <div class="small muted" style="margin-bottom:16px">予約メールや乗換案内の結果を貼り付けるか、<br>スクリーンショットを選ぶと、時系列に並べます。</div>
+      <div class="stack"><button class="btn" data-act="paste">${I.copy}文字を貼り付けてつくる</button>
+      <button class="btn secondary" data-act="import">${I.photo}スクショからつくる</button>
+      <button class="btn secondary" data-act="add">${I.edit}手入力で追加</button></div></div>`;
+    drawWeather();
     return;
   }
   const evs = events(t);
@@ -67,11 +70,9 @@ export function renderTrip() {
   const cost = items.reduce((s, i) => s + (parseFloat(String(i.cost || '').replace(/[^\d.]/g, '')) || 0), 0);
   const nxt = nextEvent(now);
   const shown = evs.filter((e) => filter === 'all' || (filter === 'unres' && !e.it.reserved) || (filter === 'move' && TRANSPORT.has(e.it.type)) || (filter === 'stay' && e.it.type === 'hotel') || (filter === 'alt' && e.it.alternates?.length));
-  let html = `
-    <div class="large-title"><h1>旅程</h1><div class="actions"><button class="icon-btn" data-act="menu">${I.dots}</button><button class="icon-btn" data-act="addmenu">${I.plus}</button></div></div>
-    <div class="trip-head"><select id="trip-sel">${d.trips.map((x) => `<option value="${x.id}" ${x.id === t.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="__new">＋ 新しい旅…</option></select></div>
-    <div class="now-banner"><span style="color:var(--red)">${I.clock}</span><span class="t" id="trip-now">${hm(now)}</span>
-      <div class="grow small" style="flex:1;min-width:0" id="trip-next">${nextText(nxt, now)}</div></div>
+  let html = `${heroHTML()}${statusHTML()}
+    <div class="section-head"><h2>旅程</h2><div class="actions"><button class="icon-btn" data-act="menu" aria-label="旅のメニュー">${I.dots}</button><button class="icon-btn filled" data-act="addmenu" aria-label="予定を追加">${I.plus}</button></div></div>
+    <div class="trip-head"><label class="field-label" style="margin:0">表示中の旅</label><select id="trip-sel" class="field">${d.trips.map((x) => `<option value="${x.id}" ${x.id === t.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="__new">＋ 新しい旅をつくる…</option></select></div>
     <div class="stats">
       <div><b>${items.length}</b><span>予定</span></div>
       <div><b style="color:${resv === items.length ? 'var(--green)' : 'var(--orange)'}">${resv}/${items.length}</b><span>予約済み</span></div>
@@ -86,7 +87,7 @@ export function renderTrip() {
     const dk = dayKey(e.at);
     if (dk !== lastDay) {
       if (!nowPlaced && lastDay && dayKey(now) === lastDay) { html += nowLine(now); nowPlaced = true; }
-      html += `<div class="day-head ${dk === dayKey(now) ? 'today' : ''}" style="margin-left:-64px">${mdw(e.at)}<small>${dayIndex(evs, e.at)}</small></div>`;
+      html += `<div class="day-head ${dk === dayKey(now) ? 'today' : ''}" style="margin-left:-64px">${mdw(e.at)}<small>${dayIndex(evs, e.at)}</small><span class="day-wx" data-day="${dk}"></span></div>`;
       lastDay = dk; prev = null;
     }
     if (!nowPlaced && e.at > now && dayKey(now) === dk) { html += nowLine(now); nowPlaced = true; }
@@ -100,6 +101,9 @@ export function renderTrip() {
   html += '</div>';
   if (noTime.length) html += `<div class="section-title">日時が未定</div><div class="tl">${noTime.map((e) => evHTML(e, now)).join('')}</div>`;
   el().innerHTML = html;
+  drawWeather();
+  afterStatus();
+  dayWeather(t);
 }
 function dayIndex(evs, at) {
   const first = evs.find((e) => e.at)?.at;
@@ -150,10 +154,8 @@ function evHTML(e, now) {
 }
 
 export function tickTrip() {
-  const n = $('#trip-now'); if (!n) return;
-  const now = new Date();
-  n.textContent = hm(now);
-  $('#trip-next').innerHTML = nextText(nextEvent(now), now);
+  tickHome();
+  tickStatus();
 }
 
 export function bindTrip() {
@@ -172,6 +174,7 @@ export function bindTrip() {
     if (act !== 'open') e.stopPropagation();
     switch (act) {
       case 'import': openImport({}); break;
+      case 'paste': openPaste({}); break;
       case 'add': editItem(null); break;
       case 'addmenu': addMenu(); break;
       case 'menu': tripMenu(); break;
@@ -190,14 +193,16 @@ function addMenu() {
     title: '追加', left: '閉じる',
     build(body, close) {
       body.innerHTML = `<div class="list">
-        <button class="row icon-row" data-k="import"><span class="ico" style="background:var(--indigo)">${I.sparkles}</span><div class="grow">スクショから取り込む<div class="sub">乗換案内・ホテル・飛行機の予約画面など（複数まとめてOK）</div></div><span class="chev">${I.chev}</span></button>
+        <button class="row icon-row" data-k="paste"><span class="ico" style="background:var(--blue)">${I.copy}</span><div class="grow">文字を貼り付けて取り込む<div class="sub">予約メール・乗換案内の結果・メモなど（形式は自由）</div></div><span class="chev">${I.chev}</span></button>
+        <button class="row icon-row" data-k="import"><span class="ico" style="background:var(--indigo)">${I.photo}</span><div class="grow">スクショから取り込む<div class="sub">乗換案内・ホテル・飛行機の予約画面など（複数まとめてOK）</div></div><span class="chev">${I.chev}</span></button>
         <button class="row icon-row" data-k="alt"><span class="ico" style="background:var(--orange)">${I.route}</span><div class="grow">予備ルートを追加<div class="sub">乗り遅れた時などの別ルートのスクショ</div></div><span class="chev">${I.chev}</span></button>
         <button class="row icon-row" data-k="add"><span class="ico" style="background:var(--blue)">${I.edit}</span><div class="grow">手入力で追加</div><span class="chev">${I.chev}</span></button>
       </div>`;
       $$('[data-k]', body).forEach((b) => b.onclick = () => {
         close();
         setTimeout(() => {
-          if (b.dataset.k === 'import') openImport({});
+          if (b.dataset.k === 'paste') openPaste({});
+          else if (b.dataset.k === 'import') openImport({});
           else if (b.dataset.k === 'alt') openImport({ alternate: true });
           else editItem(null);
         }, 250);
