@@ -245,7 +245,50 @@ input::placeholder, textarea::placeholder { color: var(--label3); }
 .tile .ico { width: 40px; height: 40px; border-radius: 12px; font-size: 22px; }
 
 /* ===== 旅程 ===== */
-.trip-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.trip-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+
+.trip-quick-actions {
+  display: flex; gap: 8px; margin-bottom: 12px;
+}
+.quick-btn {
+  flex: 1; height: 38px; border-radius: 12px; background: var(--bg2); box-shadow: var(--shadow);
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  font-size: 13.5px; font-weight: 600; color: var(--blue); transition: transform .15s, background .15s;
+}
+.quick-btn:active { transform: scale(.96); background: var(--fill); }
+.quick-btn svg { width: 16px; height: 16px; }
+
+/* 1日ごとのタイムライン切替タブ */
+.day-tabs {
+  display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px; margin-bottom: 4px;
+  scrollbar-width: none;
+}
+.day-tabs::-webkit-scrollbar { display: none; }
+.day-tab {
+  flex: none; height: 36px; padding: 0 14px; border-radius: 18px; background: var(--bg2);
+  box-shadow: var(--shadow); font-size: 14px; font-weight: 600; color: var(--label);
+  display: inline-flex; align-items: center; gap: 6px; transition: all .2s;
+}
+.day-tab small { font-size: 12px; opacity: .75; font-weight: 500; }
+.day-tab.active { background: var(--blue); color: #fff; box-shadow: 0 4px 12px rgba(10,132,255,.3); }
+.day-tab:active { transform: scale(.95); }
+
+/* 空き時間スロット */
+.gap-slot {
+  position: relative; margin: 4px 0 12px; padding: 8px 12px;
+  border-radius: 12px; background: color-mix(in srgb, var(--blue) 8%, var(--bg2));
+  border: 1px dashed color-mix(in srgb, var(--blue) 35%, transparent);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.gap-info { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--blue); }
+.gap-info svg { width: 16px; height: 16px; }
+.gap-add-btn {
+  font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 14px;
+  background: var(--blue); color: #fff; display: inline-flex; align-items: center; gap: 4px;
+  transition: transform .15s;
+}
+.gap-add-btn:active { transform: scale(.95); }
+.gap-note.ok { color: var(--green); }
 
 .now-banner {
   position: sticky; top: calc(var(--sat) * 0); z-index: 5; display: flex; align-items: center; gap: 10px;

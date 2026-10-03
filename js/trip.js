@@ -1,12 +1,15 @@
 // 旅程：時系列の一覧・予約チェック・予備ルート・編集
-import { $, $$, esc, uid, store, sheet, page, toast, confirmBox, switchHTML, haptic, I, TYPES, TRANSPORT, parseLocal, hm, dayKey, mdw, dur, countdown, yen, copyText, blobs, download, segment } from './util.js';
+import { $, $$, esc, uid, store, sheet, page, toast, confirmBox, switchHTML, haptic, I, TYPES, TRANSPORT, parseLocal, hm, dayKey, mdw, dur, countdown, yen, copyText, blobs, download, segment, toLocalISO } from './util.js';
 import { openImport, openPaste } from './ai.js';
 import { heroHTML, drawWeather, statusHTML, afterStatus, dayWeather, tickHome, tickStatus } from './home.js';
 import { transitLinks, mapsSearchUrl, spotSearch } from './transit.js';
 import { icsDownload } from './tools.js';
+import { detectGaps, suggestSpotsForGap, autoOptimizeSchedule, getRecommendedTransferTime } from './planner.js';
+import { openShiori } from './shiori.js';
 
 const el = () => $('#view-trip');
 let filter = 'all';
+let selectedDay = 'all';
 
 export function currentTrip() {
   const d = store.data;
@@ -69,42 +72,119 @@ export function renderTrip() {
   const resv = items.filter((i) => i.reserved).length;
   const cost = items.reduce((s, i) => s + (parseFloat(String(i.cost || '').replace(/[^\d.]/g, '')) || 0), 0);
   const nxt = nextEvent(now);
-  const shown = evs.filter((e) => filter === 'all' || (filter === 'unres' && !e.it.reserved) || (filter === 'move' && TRANSPORT.has(e.it.type)) || (filter === 'stay' && e.it.type === 'hotel') || (filter === 'alt' && e.it.alternates?.length));
+
+  // 日付一覧を抽出
+  const dayKeys = [...new Set(evs.filter((e) => e.at).map((e) => dayKey(e.at)))];
+  if (selectedDay !== 'all' && !dayKeys.includes(selectedDay) && dayKeys.length) {
+    selectedDay = 'all';
+  }
+
+  // フィルタと日別選択の適用
+  const shown = evs.filter((e) => {
+    if (selectedDay !== 'all' && e.at && dayKey(e.at) !== selectedDay) return false;
+    if (filter === 'unres' && e.it.reserved) return false;
+    if (filter === 'move' && !TRANSPORT.has(e.it.type)) return false;
+    if (filter === 'stay' && e.it.type !== 'hotel') return false;
+    if (filter === 'alt' && !e.it.alternates?.length) return false;
+    return true;
+  });
+
   let html = `${heroHTML()}${statusHTML()}
-    <div class="section-head"><h2>旅程</h2><div class="actions"><button class="icon-btn" data-act="menu" aria-label="旅のメニュー">${I.dots}</button><button class="icon-btn filled" data-act="addmenu" aria-label="予定を追加">${I.plus}</button></div></div>
+    <div class="section-head">
+      <h2>旅程</h2>
+      <div class="actions">
+        <button class="icon-btn" data-act="pdf" title="旅のしおり・PDF出力" aria-label="PDF出力">${I.download}</button>
+        <button class="icon-btn" data-act="optimize" title="スケジュール自動調整・おすすめスポット考慮" aria-label="自動最適化">${I.sparkles}</button>
+        <button class="icon-btn" data-act="menu" aria-label="旅のメニュー">${I.dots}</button>
+        <button class="icon-btn filled" data-act="addmenu" aria-label="予定を追加">${I.plus}</button>
+      </div>
+    </div>
     <div class="trip-head"><label class="field-label" style="margin:0">表示中の旅</label><select id="trip-sel" class="field">${d.trips.map((x) => `<option value="${x.id}" ${x.id === t.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="__new">＋ 新しい旅をつくる…</option></select></div>
+    
+    <!-- クイックアクションバー -->
+    <div class="trip-quick-actions">
+      <button class="quick-btn" data-act="pdf">${I.note}<span>PDF・しおり</span></button>
+      <button class="quick-btn" data-act="optimize">${I.sparkles}<span>スケジュール最適化</span></button>
+      <button class="quick-btn" data-act="addmenu">${I.plus}<span>予定を追加</span></button>
+    </div>
+
     <div class="stats">
       <div><b>${items.length}</b><span>予定</span></div>
       <div><b style="color:${resv === items.length ? 'var(--green)' : 'var(--orange)'}">${resv}/${items.length}</b><span>予約済み</span></div>
       <div><b>${cost ? yen(cost) : '—'}</b><span>費用の合計</span></div>
     </div>
+
+    <!-- 1日ごとのタイムライン切替タブ -->
+    ${dayKeys.length > 1 ? `
+    <div class="day-tabs">
+      <button class="day-tab ${selectedDay === 'all' ? 'active' : ''}" data-day="all">すべて (${dayKeys.length}日間)</button>
+      ${dayKeys.map((dk, idx) => {
+        const dObj = parseLocal(dk);
+        return `<button class="day-tab ${selectedDay === dk ? 'active' : ''}" data-day="${dk}">Day ${idx + 1} <small>${dObj.getMonth() + 1}/${dObj.getDate()}</small></button>`;
+      }).join('')}
+    </div>` : ''}
+
     <div class="chips">${[['all', 'すべて'], ['unres', '未予約'], ['move', '移動'], ['stay', '宿泊'], ['alt', '予備ルートあり']].map(([k, n]) => `<button class="chip ${filter === k ? 'on' : ''}" data-filter="${k}">${n}</button>`).join('')}</div>`;
+
   if (!items.length) html += `<div class="empty">${I.route}<div>まだ予定がありません</div><div class="small">右上の ＋ から追加できます</div></div>`;
+
   let lastDay = '', nowPlaced = false, prev = null;
   const noTime = shown.filter((e) => !e.at);
   html += '<div class="tl">';
-  for (const e of shown.filter((x) => x.at)) {
+
+  const timedEvents = shown.filter((x) => x.at);
+  for (let idx = 0; idx < timedEvents.length; idx++) {
+    const e = timedEvents[idx];
     const dk = dayKey(e.at);
     if (dk !== lastDay) {
       if (!nowPlaced && lastDay && dayKey(now) === lastDay) { html += nowLine(now); nowPlaced = true; }
-      html += `<div class="day-head ${dk === dayKey(now) ? 'today' : ''}" style="margin-left:-64px">${mdw(e.at)}<small>${dayIndex(evs, e.at)}</small><span class="day-wx" data-day="${dk}"></span></div>`;
+      const dayEvs = evs.filter((x) => x.at && dayKey(x.at) === dk);
+      const dayMoves = dayEvs.filter((x) => TRANSPORT.has(x.it.type)).length;
+      html += `<div class="day-head ${dk === dayKey(now) ? 'today' : ''}" style="margin-left:-64px">
+        <span>${mdw(e.at)}</span>
+        <small>${dayIndex(evs, e.at)}・${dayEvs.length}件${dayMoves ? ` (${dayMoves}移動)` : ''}</small>
+        <span class="day-wx" data-day="${dk}"></span>
+      </div>`;
       lastDay = dk; prev = null;
     }
     if (!nowPlaced && e.at > now && dayKey(now) === dk) { html += nowLine(now); nowPlaced = true; }
-    if (prev && TRANSPORT.has(prev.it.type) && TRANSPORT.has(e.it.type) && prev.end && e.at > prev.end - 1) {
-      const gap = (e.at - prev.end) / 60000;
-      if (gap >= 0 && gap < 180) html += `<div class="gap-note ${gap < 5 ? 'warn' : ''}">${gap < 5 ? I.warn : I.walk} 乗り換え ${Math.round(gap)}分${gap < 5 ? '（短いので注意）' : ''}</div>`;
+
+    // 前の予定との間の乗り換え時間または空き時間の表示
+    if (prev && prev.end && e.at > prev.end - 1 && dayKey(prev.end) === dk) {
+      const gapMin = Math.round((e.at - prev.end) / 60000);
+      const isBothMove = TRANSPORT.has(prev.it.type) && TRANSPORT.has(e.it.type);
+      const recTransfer = getRecommendedTransferTime(prev.it, e.it);
+
+      if (isBothMove && gapMin < 180) {
+        // 乗り換え表示
+        const isShort = gapMin < recTransfer;
+        html += `<div class="gap-note ${isShort ? 'warn' : 'ok'}">
+          ${isShort ? I.warn : I.walk} 乗り換え ${gapMin}分${isShort ? `（${recTransfer}分以上を推奨）` : '（余裕あり）'}
+        </div>`;
+      } else if (gapMin >= 30) {
+        // 30分以上の空き時間スロット
+        const loc = prev.it.to || prev.it.address || prev.it.title || e.it.from || '';
+        html += `<div class="gap-slot" data-gap-start="${prev.end.toISOString()}" data-gap-end="${e.at.toISOString()}" data-gap-loc="${esc(loc)}" data-gap-min="${gapMin}">
+          <div class="gap-info">${I.clock} <span>空き時間 ${gapMin >= 60 ? `${Math.floor(gapMin / 60)}時間${gapMin % 60 ? (gapMin % 60) + '分' : ''}` : `${gapMin}分`}</span></div>
+          <button class="gap-add-btn" data-act="suggest-spot">${I.sparkles}おすすめスポットを提案</button>
+        </div>`;
+      }
     }
+
     html += evHTML(e, now);
     prev = e;
   }
   html += '</div>';
-  if (noTime.length) html += `<div class="section-title">日時が未定</div><div class="tl">${noTime.map((e) => evHTML(e, now)).join('')}</div>`;
+
+  if (noTime.length && (selectedDay === 'all')) {
+    html += `<div class="section-title">日時が未定</div><div class="tl">${noTime.map((e) => evHTML(e, now)).join('')}</div>`;
+  }
   el().innerHTML = html;
   drawWeather();
   afterStatus();
   dayWeather(t);
 }
+
 function dayIndex(evs, at) {
   const first = evs.find((e) => e.at)?.at;
   if (!first) return '';
@@ -165,6 +245,13 @@ export function bindTrip() {
     store.data.currentTrip = e.target.value; store.save(); renderTrip();
   });
   el().addEventListener('click', async (e) => {
+    const tDay = e.target.closest('[data-day]');
+    if (tDay) {
+      selectedDay = tDay.dataset.day;
+      haptic();
+      renderTrip();
+      return;
+    }
     const t = e.target.closest('[data-act],[data-filter]');
     if (!t) return;
     if (t.dataset.filter) { filter = t.dataset.filter; haptic(); renderTrip(); return; }
@@ -173,6 +260,13 @@ export function bindTrip() {
     const it = trip?.items.find((x) => x.id === t.closest('[data-id]')?.dataset.id);
     if (act !== 'open') e.stopPropagation();
     switch (act) {
+      case 'pdf': openShiori(); break;
+      case 'optimize': if (trip) openOptimizeSheet(trip); break;
+      case 'suggest-spot': {
+        const slotEl = t.closest('.gap-slot');
+        if (trip && slotEl) openSuggestSpotSheet(trip, slotEl);
+        break;
+      }
       case 'import': openImport({}); break;
       case 'paste': openPaste({}); break;
       case 'add': editItem(null); break;
@@ -184,6 +278,114 @@ export function bindTrip() {
       case 'swap': swapAlternate(trip, it, t.dataset.alt); break;
       case 'imgs': showImgs(it); break;
       case 'open': if (e.target.closest('a,button')) return; editItem(it); break;
+    }
+  });
+}
+
+function openOptimizeSheet(trip) {
+  sheet({
+    title: 'スケジュール最適化', left: '閉じる', right: '最適化を実行',
+    onRight: async (body, close) => {
+      const prog = $('#opt-prog', body);
+      prog.innerHTML = '<div class="hstack small"><span class="spinner"></span>移動時間・乗り換え・おすすめスポットを計算中…</div>';
+      try {
+        const res = await autoOptimizeSchedule(trip);
+        trip.items = res.items;
+        store.save();
+        renderTrip();
+        haptic();
+        toast('スケジュールを最適化しました');
+        confirmBox('最適化が完了しました', res.summary, 'OK', { cancel: '' });
+        return true;
+      } catch (e) {
+        prog.innerHTML = `<div class="small" style="color:var(--red)">${esc(e.message || String(e))}</div>`;
+        return false;
+      }
+    },
+    build(body) {
+      const gaps = detectGaps(trip);
+      body.innerHTML = `
+        <div class="card" style="margin:0 0 12px">
+          <div style="font-weight:600;margin-bottom:4px">${I.sparkles} 旅程のスマート分析</div>
+          <div class="small muted">予定間の移動時間や乗り換えバッファを自動チェックし、無理のない時間に整えます。空き時間には周辺の観光スポットや食事処を考慮します。</div>
+        </div>
+        <div class="section-title">検出された状況</div>
+        <div class="list">
+          <div class="row"><div>登録されている予定</div><b style="margin-left:auto">${trip.items.length}件</b></div>
+          <div class="row"><div>30分以上の空き時間</div><b style="margin-left:auto">${gaps.length}箇所</b></div>
+        </div>
+        <div id="opt-prog" style="margin-top:14px"></div>
+      `;
+    }
+  });
+}
+
+function openSuggestSpotSheet(trip, slotEl) {
+  const gapStart = new Date(slotEl.dataset.gapStart);
+  const gapEnd = new Date(slotEl.dataset.gapEnd);
+  const loc = slotEl.dataset.gapLoc || '';
+  const gapMin = parseInt(slotEl.dataset.gapMin || '60', 10);
+
+  sheet({
+    title: 'おすすめスポットの提案', left: '閉じる',
+    build(body, close) {
+      body.innerHTML = `
+        <div class="small muted" style="margin-bottom:12px">
+          ${hm(gapStart)} 〜 ${hm(gapEnd)}（${gapMin}分間）の空き時間<br>
+          ${loc ? `周辺エリア: <b>${esc(loc)}</b>` : ''}
+        </div>
+        <div id="spot-sugg-list"><div class="hstack small"><span class="spinner"></span>おすすめ候補を探しています…</div></div>
+      `;
+      (async () => {
+        const spots = await suggestSpotsForGap({ location: loc, minutes: gapMin });
+        const listEl = $('#spot-sugg-list', body);
+        if (!spots.length) {
+          listEl.innerHTML = `<div class="empty">${I.pin}<div>近くのおすすめが見つかりませんでした</div><div class="small">手動でスポットを検索するか予定を追加できます</div><button class="btn small" style="margin-top:10px" id="gap-manual-add">${I.plus}手入力で予定を追加</button></div>`;
+          $('#gap-manual-add', body)?.addEventListener('click', () => { close(); editItem({ start: toLocalISO(gapStart), end: toLocalISO(gapEnd) }); });
+          return;
+        }
+        listEl.innerHTML = `
+          <div class="list">
+            ${spots.map((s, idx) => `
+              <div class="row icon-row" data-spot-idx="${idx}" style="cursor:pointer">
+                <span class="ico" style="background:${s.category === 'グルメ' || s.category === 'カフェ' ? 'var(--orange)' : 'var(--blue)'}">${s.category === 'グルメ' ? I.food : I.star}</span>
+                <div class="grow">
+                  <b>${esc(s.name)}</b>
+                  <div class="sub">${esc(s.category)}・目安${s.stay}分${s.notes ? `・${esc(s.notes)}` : ''} ${s.source === 'wishlist' ? '<span class="badge ok">行きたいリスト</span>' : ''}</div>
+                </div>
+                <button class="btn small" style="flex:none" data-add-spot="${idx}">追加</button>
+              </div>
+            `).join('')}
+          </div>
+          <div style="margin-top:14px"><button class="btn secondary" id="gap-search-more">${I.search}行きたいリストを開く</button></div>
+        `;
+        $$('[data-add-spot]', listEl).forEach((b) => b.onclick = () => {
+          const s = spots[parseInt(b.dataset.addSpot, 10)];
+          const durMs = (s.stay || 45) * 60000;
+          const endMs = Math.min(gapEnd.getTime(), gapStart.getTime() + durMs);
+          const newItem = {
+            id: uid(),
+            type: s.category === 'グルメ' || s.category === 'カフェ' ? 'meal' : 'activity',
+            title: s.name,
+            start: toLocalISO(gapStart),
+            end: toLocalISO(new Date(endMs)),
+            address: s.address || '',
+            notes: s.notes || '',
+            reserved: false,
+            imgs: []
+          };
+          trip.items.push(newItem);
+          store.save();
+          renderTrip();
+          haptic();
+          toast(`「${s.name}」を旅程に追加しました`);
+          close();
+        });
+        $('#gap-search-more', body)?.addEventListener('click', () => {
+          close();
+          import('./tools.js').then((m) => m.openWishlist?.());
+        });
+      })();
     }
   });
 }

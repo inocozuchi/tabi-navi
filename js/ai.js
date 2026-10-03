@@ -1,9 +1,10 @@
 // スクリーンショットから旅程をつくる
 //  ・Claude API キーがある時：画像を Claude に読ませて、予定を構造化して返してもらう（高精度）
 //  ・キーが無い時：端末の中で文字を読み取り（Tesseract.js）、簡単な規則で予定に分ける（精度は控えめ）
-import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, shrinkImage, blobToBase64, blobs, pad, toLocalISO, segment } from './util.js';
+import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, blobToBase64, blobs, pad, toLocalISO, segment } from './util.js';
 import { currentTrip, ensureTrip, renderTrip, editItem, events } from './trip.js';
-import { parseAny } from './parse.js';
+import { parseAny, cleanOcrText, findDate } from './parse.js';
+import { prepForAI, prepForOCR } from './imageprep.js';
 
 const TYPE_KEYS = Object.keys(TYPES);
 const str = { type: 'string' };
@@ -18,13 +19,13 @@ const SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['type', 'title', 'from', 'to', 'start', 'end', 'operator', 'number', 'platform', 'seat', 'confirmation', 'cost', 'address', 'notes', 'reserved', 'is_alternate', 'route_group', 'source_image'],
+        required: ['type', 'title', 'from', 'to', 'start', 'end', 'operator', 'number', 'platform', 'seat', 'confirmation', 'cost', 'address', 'phone', 'notes', 'reserved', 'is_alternate', 'route_group', 'source_image'],
         properties: {
           type: { type: 'string', enum: TYPE_KEYS },
           title: str, from: str, to: str,
           start: { type: 'string', description: 'YYYY-MM-DDTHH:MM（現地時刻）。不明なら空文字' },
           end: { type: 'string', description: 'YYYY-MM-DDTHH:MM。不明なら空文字' },
-          operator: str, number: str, platform: str, seat: str, confirmation: str, cost: str, address: str, notes: str,
+          operator: str, number: str, platform: str, seat: str, confirmation: str, cost: str, address: str, phone: str, notes: str,
           reserved: { type: 'boolean' },
           is_alternate: { type: 'boolean' },
           route_group: { type: 'string', description: '同じ経路の候補に属する区間に同じ値（例 "A"）' },
@@ -35,17 +36,20 @@ const SCHEMA = {
   },
 };
 
-const SYSTEM = `あなたは旅行の予定表をつくるアシスタントです。ユーザーが送るスクリーンショット（乗換案内の検索結果、ホテル・航空券・高速バス・新幹線などの予約確認画面、予約メールなど）を読み取り、旅程の「予定」の一覧にして返します。
+const SYSTEM = `あなたは旅行の予定表をつくるアシスタントです。ユーザーが送るスクリーンショットや写真（乗換案内の検索結果、ホテル・航空券・高速バス・新幹線などの予約確認画面、予約メール、紙のきっぷ・旅程表の写真など）を読み取り、旅程の「予定」の一覧にして返します。
 
 ルール:
 - 乗換案内の結果は、乗り物に乗る区間ごとに1件の予定にする（徒歩の乗り換えは、10分以上の時だけ type=walk の予定にする）。title には列車名・路線名（例「のぞみ 21号」「JR山手線 外回り」）、operator に会社名、platform に「14番線発」のような番線、cost に運賃・特急料金を入れる。
 - 新幹線・特急は type=shinkansen（新幹線）または train。地下鉄は subway、路線バス・高速バスは bus、飛行機は flight、フェリーは ferry、タクシーやレンタカーは taxi。
-- ホテル・旅館・ゲストハウス・カプセルホテルは type=hotel の1件にまとめ、start=チェックイン日時、end=チェックアウト日時。時刻が書かれていなければ チェックイン 15:00、チェックアウト 10:00 とし、notes に「時刻は推定」と書く。部屋タイプやベッドは notes に入れる。
+- 号車・座席（例「7号車 3番A席」）は seat に「7号車 3A」の形で入れる。指定席・自由席・グリーン車などは notes に入れる。
+- ホテル・旅館・ゲストハウス・カプセルホテルは type=hotel の1件にまとめ、start=チェックイン日時、end=チェックアウト日時。時刻が書かれていなければ チェックイン 15:00、チェックアウト 10:00 とし、notes に「時刻は推定」と書く。部屋タイプやベッドは notes、住所は address、電話番号は phone に入れる。
 - 飛行機は number に便名（例「NH 21」）、from/to に空港名（ターミナルがあれば含める）、seat、confirmation（予約番号・確認番号）を入れる。
-- 日時は必ず「YYYY-MM-DDTHH:MM」。年が書かれていなければ、今日以降でいちばん近い日付にする。分からない項目は空文字。
+- 日時は必ず「YYYY-MM-DDTHH:MM」。年が書かれていなければ、曜日が書かれていれば曜日が合う年、無ければ今日以降でいちばん近い日付にする。日付が書かれていない画像は、ほかの画像や補足の日付から判断する。分からない項目は空文字。
+- 到着時刻が出発時刻より前なら、到着は翌日（夜行バス・深夜便など）。所要時間が書かれていれば、発着時刻と合っているか確かめる。数字の読み間違い（0と8、1と7、3と8など）に注意し、つじつまが合う方を選ぶ。
 - 予約完了・予約確認・eチケット・予約番号のある画面は reserved=true。検索結果だけの画面は reserved=false。
 - 同じ区間について別の候補（予備ルート）として送られた画像の予定は is_alternate=true にする。1つの経路候補に属する区間には同じ route_group を付ける（主のルートは "main"）。
-- 画像に関係のない広告やおすすめは無視する。重複する予定は1件にまとめる。`;
+- 縦長の画像は「分割した○枚目」として続けて送ることがある。分割の境目で同じ予定が2回写っていたら1件にまとめ、source_image は元の画像の番号にする。
+- 画像に関係のない広告・おすすめ・アプリのボタンは無視する。重複する予定は1件にまとめる。写っていないことを推測で作らない。`;
 
 let sdkPromise;
 async function sdk() {
@@ -88,17 +92,32 @@ export async function imageContent(blobsList) {
   }
   return content;
 }
+// 写真を AI 用に整える：縦長のスクショは切り分けて、文字がつぶれないようにする
+//  戻り値 { content: Claude に渡す中身, views: 保存して予定に付ける画像（元の写真1枚につき1つ） }
+export async function prepareImages(files, onProg) {
+  const content = [], views = [];
+  for (let i = 0; i < files.length; i++) {
+    onProg?.(i / files.length);
+    const { tiles, view } = await prepForAI(files[i]);
+    views.push(view);
+    for (let k = 0; k < tiles.length; k++) {
+      content.push({ type: 'text', text: tiles.length > 1 ? `画像${i + 1}（縦長のため ${tiles.length} 枚に分割した ${k + 1} 枚目${k ? '・前の続き' : ''}）` : `画像${i + 1}` });
+      content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await blobToBase64(tiles[k]) } });
+    }
+  }
+  return { content, views };
+}
 export function friendlyError(e) {
   let msg = e?.message || String(e);
   if (e?.status === 401) msg = 'API キーが正しくありません（設定を確認してください）';
   else if (e?.status === 429 || e?.status === 529) msg = '混み合っています。少し待ってからもう一度お試しください';
+  else if (e?.status === 413) msg = '画像が大きすぎます。枚数を減らしてお試しください';
   else if (/fetch|network|load failed/i.test(msg)) msg = '通信できませんでした。電波を確認してください';
   return msg;
 }
 
-async function askClaude(images, hint, alternate) {
-  const content = await imageContent(images);
-  content.push({ type: 'text', text: `${todayText()}${alternate ? 'これらの画像は「予備ルート」です。すべて is_alternate=true にしてください。' : ''}${hint ? `\n補足: ${hint}` : ''}\n画像から旅程の予定を取り出してください。` });
+async function askClaude(content, hint, alternate) {
+  content = [...content, { type: 'text', text: `${todayText()}${alternate ? 'これらの画像は「予備ルート」です。すべて is_alternate=true にしてください。' : ''}${hint ? `\n補足: ${hint}` : ''}\n画像から旅程の予定を取り出してください。` }];
   return callClaude({ system: SYSTEM, content, schema: SCHEMA });
 }
 
@@ -110,15 +129,57 @@ function tesseract() {
     const s = document.createElement('script');
     s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
     s.onload = () => res(window.Tesseract);
-    s.onerror = () => rej(new Error('文字読み取りの部品を読み込めませんでした（通信を確認してください）'));
+    s.onerror = () => { tessP = null; rej(new Error('文字読み取りの部品を読み込めませんでした（通信を確認してください）')); };
     document.head.append(s);
   });
   return tessP;
 }
-export async function ocr(blob, onProg) {
-  const T = await tesseract();
-  const r = await T.recognize(blob, 'jpn+eng', { logger: (m) => m.status === 'recognizing text' && onProg?.(m.progress) });
-  return r.data.text;
+// 読み取りの係（worker）は1つを使い回す。毎回つくると言語データ（日本語は十数MB）を読み直して遅い
+let workerP, progFn = null;
+function worker() {
+  workerP ??= (async () => {
+    const T = await tesseract();
+    const w = await T.createWorker('jpn+eng', 1, {
+      logger: (m) => {
+        if (m.status === 'recognizing text') progFn?.(m.progress, 'read');
+        else if (/loading|initializ/.test(m.status) && m.progress != null) progFn?.(m.progress, 'load');
+      },
+    });
+    // 単語の間の空白をそのまま残す（表の列がくっつかないように）
+    await w.setParameters({ preserve_interword_spaces: '1' });
+    return w;
+  })().catch((e) => { workerP = null; throw e; });
+  return workerP;
+}
+// 写真1枚から文字を読む。縦長は分けて読み、つなげる
+//  onProg(0〜1, 'load'|'read')
+export async function ocr(file, onProg) {
+  const parts = await prepForOCR(file);
+  const w = await worker();
+  let text = '';
+  try {
+    for (let i = 0; i < parts.length; i++) {
+      progFn = (p, kind) => onProg?.(kind === 'load' ? p * 0.1 : (i + p) / parts.length, kind);
+      const r = await w.recognize(parts[i]);
+      text += r.data.text + '\n';
+    }
+  } finally { progFn = null; }
+  return cleanOcrText(text);
+}
+
+// 写真から読んだ文字を予定にする。日付が書かれていない画像は、前の画像の日付を引き継ぐ
+export function itemsFromOcrTexts(texts) {
+  const items = [];
+  let lastDateLine = '';
+  texts.forEach((text, i) => {
+    let src = text;
+    const dl = text.split('\n').find((l) => findDate(l));
+    if (dl) lastDateLine = dl;
+    else if (lastDateLine) src = `${lastDateLine}\n${text}`;
+    items.push(...parseAny(src).map((x) => ({ ...x, is_alternate: false, route_group: 'main', source_image: i + 1 })));
+  });
+  const seen = new Set();
+  return items.filter((x) => { const k = `${x.type}|${x.start}|${x.from}|${x.title}`; if (seen.has(k)) return false; seen.add(k); return true; });
 }
 // ===== 文字を貼り付けて取り込む =====
 // 予約メール・乗換案内の結果・メモなど、形式がバラバラでも自動で見分ける
@@ -183,21 +244,28 @@ export function openImport({ alternate = false, targetId = null }) {
   const files = [];
   let mode = alternate ? 'alt' : 'main';
   let target = targetId;
+  let useAI = !!s.apiKey;
+  let hint = '';
+  let onPaste = null;
+  const addFiles = (list) => { for (const f of list) if (f && /^image\//.test(f.type || 'image/')) files.push({ file: f, url: URL.createObjectURL(f) }); };
   sheet({
     title: alternate ? '予備ルートを取り込む' : 'スクショから取り込む', left: 'キャンセル',
+    onClose: () => { document.removeEventListener('paste', onPaste); },
     build(body, close) {
       const draw = () => {
         const trip = currentTrip();
         const moves = trip ? events(trip).filter((e) => e.kind !== 'out') : [];
         body.innerHTML = `
-          <label class="drop" id="imp-drop">${I.photo}<div style="margin-top:6px;font-weight:600;color:var(--label)">スクリーンショットを選ぶ</div><div class="small">複数まとめて選べます（乗換案内・ホテル・飛行機・バスの予約画面など）</div>
+          <label class="drop" id="imp-drop">${I.photo}<div style="margin-top:6px;font-weight:600;color:var(--label)">スクリーンショット・写真を選ぶ</div><div class="small">複数まとめて選べます（乗換案内・ホテル・飛行機・バスの予約画面、紙のきっぷなど）<br>縦に長いスクショもそのまま読めます</div>
             <input type="file" accept="image/*" multiple hidden id="imp-file"></label>
+          <div class="hstack" style="margin-top:8px"><button class="btn small secondary" id="imp-clip">${I.copy}コピーした画像を貼り付け</button></div>
           <div class="thumbs" id="imp-th"></div>
           <div class="section-title">取り込み方</div>
           <div class="segment" id="imp-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
           ${mode === 'alt' && moves.length ? `<div class="list"><div class="row"><div style="flex:none">どの予定の予備？</div><select id="imp-target"><option value="">自動で判断</option>${moves.map((e) => `<option value="${e.it.id}" ${target === e.it.id ? 'selected' : ''}>${e.at ? hm(e.at) : ''} ${esc(e.it.title || '')} ${esc(e.it.from || '')}→${esc(e.it.to || '')}</option>`).join('')}</select></div></div>` : ''}
-          <div class="list" style="margin-top:12px"><div class="row"><div style="flex:none">補足</div><input type="text" id="imp-hint" class="left" placeholder="例：10月3日の出発です（任意）"></div></div>
-          <div class="section-foot">${s.apiKey ? `${I.sparkles} AI（Claude）で読み取ります。画像は読み取りのために Anthropic に送られます。` : `端末の中で文字を読み取ります（精度は控えめ・読み取り後に直せます）。「設定」で Claude の API キーを入れると、ずっと正確に読み取れます。`}</div>
+          <div class="list" style="margin-top:12px"><div class="row"><div style="flex:none">補足</div><input type="text" id="imp-hint" class="left" placeholder="例：10月3日の出発です（任意）" value="${esc(hint)}"></div>
+          ${s.apiKey ? `<div class="row"><div class="grow">AI（Claude）で読む<div class="sub">オフにすると端末の中だけで読み取ります（無料）</div></div><label class="switch"><input type="checkbox" id="imp-ai" ${useAI ? 'checked' : ''}><span></span></label></div>` : ''}</div>
+          <div class="section-foot">${useAI && s.apiKey ? `${I.sparkles} AI（Claude）で読み取ります。画像は読み取りのために Anthropic に送られます。` : `端末の中で文字を読み取ります（読み取り後に直せます）。白黒にして文字をくっきりさせ、ダークモードの画面も読めるようにしています。${s.apiKey ? '' : '「設定」で Claude の API キーを入れると、ずっと正確に読み取れます。'}<br>💡 いちばん確実なのは、iPhoneの「写真」でテキスト認識 →「すべてをコピー」→「文字から取り込む」です。`}</div>
           <div style="margin-top:16px"><button class="btn" id="imp-go" ${files.length ? '' : 'disabled'}>${I.sparkles}${files.length ? `${files.length}枚を読み取る` : '画像を選んでください'}</button></div>
           <div id="imp-prog" style="margin-top:14px"></div>`;
         const th = $('#imp-th', body);
@@ -207,59 +275,85 @@ export function openImport({ alternate = false, targetId = null }) {
           d.innerHTML = `<img src="${f.url}"><button data-rm="${i}">×</button>`;
           th.append(d);
         });
-        $$('[data-rm]', body).forEach((b) => b.onclick = (e) => { e.preventDefault(); files.splice(+b.dataset.rm, 1); draw(); });
-        $('#imp-file', body).onchange = (e) => { for (const f of e.target.files) files.push({ file: f, url: URL.createObjectURL(f) }); draw(); };
+        $$('[data-rm]', body).forEach((b) => b.onclick = (e) => { e.preventDefault(); URL.revokeObjectURL(files[+b.dataset.rm].url); files.splice(+b.dataset.rm, 1); draw(); });
+        $('#imp-file', body).onchange = (e) => { addFiles(e.target.files); draw(); };
+        const drop = $('#imp-drop', body);
+        drop.ondragover = (e) => { e.preventDefault(); };
+        drop.ondrop = (e) => { e.preventDefault(); addFiles(e.dataTransfer?.files || []); draw(); };
+        $('#imp-clip', body).onclick = async () => {
+          try {
+            const list = await navigator.clipboard.read();
+            let n = 0;
+            for (const ci of list) for (const t of ci.types) if (t.startsWith('image/')) { const b = await ci.getType(t); addFiles([new File([b], `clip-${Date.now()}.${t.split('/')[1]}`, { type: t })]); n++; }
+            if (n) { toast(`${n}枚貼り付けました`); draw(); } else toast('コピーされた画像がありません');
+          } catch { toast('貼り付けできませんでした。写真を選んでください'); }
+        };
+        $('#imp-hint', body).oninput = (e) => { hint = e.target.value; };
+        $('#imp-ai', body)?.addEventListener('change', (e) => { useAI = e.target.checked; draw(); });
         segment($('#imp-mode', body), (v) => { mode = v; draw(); });
         $('#imp-target', body)?.addEventListener('change', (e) => { target = e.target.value || null; });
-        $('#imp-go', body).onclick = () => run(body, close, files, mode, target, $('#imp-hint', body).value);
+        $('#imp-go', body).onclick = () => run(body, close, files, mode, target, hint, useAI && !!s.apiKey);
       };
+      onPaste = (e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { addFiles(fs); draw(); } };
+      document.addEventListener('paste', onPaste);
       draw();
     },
   });
 }
 
-async function run(body, close, files, mode, target, hint) {
-  const s = store.data.settings;
+async function run(body, close, files, mode, target, hint, useAI) {
   const prog = $('#imp-prog', body);
   const go = $('#imp-go', body);
   go.disabled = true;
-  const say = (msg, p) => { prog.innerHTML = `<div class="hstack small"><span class="spinner"></span>${esc(msg)}</div>${p != null ? `<div class="progress" style="margin-top:8px"><i style="width:${Math.round(p * 100)}%"></i></div>` : ''}`; };
+  const say = (msg, p) => { prog.innerHTML = `<div class="hstack small"><span class="spinner"></span>${esc(msg)}</div>${p != null ? `<div class="progress" style="margin-top:8px"><i style="width:${Math.round(Math.min(1, p) * 100)}%"></i></div>` : ''}`; };
+  let ocrText = '';
   try {
-    say('画像を準備しています…', 0.05);
-    const small = [];
-    for (const f of files) small.push(await shrinkImage(f.file, 1568));
-    let result;
-    if (s.apiKey) {
+    let result, views;
+    if (useAI) {
+      say('画像を準備しています…', 0.05);
+      const prep = await prepareImages(files.map((f) => f.file), (p) => say('画像を準備しています…', 0.05 + p * 0.2));
+      views = prep.views;
       say('AIが読み取っています…（10〜60秒ほど）', 0.3);
-      result = await askClaude(small, hint, mode === 'alt');
+      result = await askClaude(prep.content, hint, mode === 'alt');
     } else {
-      const items = [];
-      for (let i = 0; i < small.length; i++) {
-        say(`文字を読み取っています… ${i + 1}/${small.length}`, i / small.length);
-        const text = await ocr(small[i], (p) => say(`文字を読み取っています… ${i + 1}/${small.length}`, (i + p) / small.length));
-        items.push(...parseAny(text).map((x) => ({ ...x, is_alternate: false, route_group: 'main', source_image: i + 1 })));
+      const texts = [];
+      views = [];
+      for (let i = 0; i < files.length; i++) {
+        const label = `文字を読み取っています… ${i + 1}/${files.length}`;
+        say(label, i / files.length);
+        views.push((await prepForAI(files[i].file, { maxSide: 1568 })).view);
+        texts.push(await ocr(files[i].file, (p, kind) => say(kind === 'load' ? '文字読み取りの準備をしています…（初回だけ少し時間がかかります）' : label, (i + p) / files.length)));
       }
-      result = { trip_name: '', items };
+      ocrText = texts.join('\n\n');
+      const hinted = hint ? texts.map((t, i) => (i === 0 ? `${hint}\n${t}` : t)) : texts;
+      result = { trip_name: '', items: itemsFromOcrTexts(hinted) };
+    }
+    const raw = result.items || [];
+    if (!raw.length) {
+      prog.innerHTML = `<div class="small" style="color:var(--orange)">予定を見つけられませんでした。${ocrText ? '読み取った文字を直してから、もう一度読み取れます。' : '手入力で追加するか、別の画像を試してください。'}</div>${ocrText ? `<div style="margin-top:10px"><button class="btn secondary" id="imp-fix">${I.edit}読み取った文字を見て直す</button></div>` : ''}`;
+      $('#imp-fix', body)?.addEventListener('click', () => { close(); setTimeout(() => openPaste({ alternate: mode === 'alt', targetId: target, initialText: ocrText }), 300); });
+      go.disabled = false;
+      return;
     }
     // 画像を保存して予定に結びつける
     const keys = [];
-    for (const b of small) { const k = 'img:' + uid(); await blobs.put(k, b); keys.push(k); }
-    const items = (result.items || []).map((x) => {
+    for (const b of views) { const k = 'img:' + uid(); await blobs.put(k, b); keys.push(k); }
+    const items = raw.map((x) => {
       const it = { id: uid(), type: TYPES[x.type] ? x.type : 'other' };
-      for (const k of ['title', 'from', 'to', 'start', 'end', 'operator', 'number', 'platform', 'seat', 'confirmation', 'cost', 'address', 'notes']) it[k] = (x[k] || '').trim();
+      for (const k of ['title', 'from', 'to', 'start', 'end', 'operator', 'number', 'platform', 'seat', 'confirmation', 'cost', 'address', 'phone', 'notes']) it[k] = (x[k] || '').trim();
       it.reserved = !!x.reserved;
       it.imgs = keys[(x.source_image || 1) - 1] ? [keys[(x.source_image || 1) - 1]] : [];
       it._alt = mode === 'alt' || !!x.is_alternate;
       it._group = x.route_group || 'main';
       return it;
     });
-    if (!items.length) { prog.innerHTML = `<div class="small" style="color:var(--orange)">予定を見つけられませんでした。手入力で追加するか、別の画像を試してください。</div>`; go.disabled = false; return; }
     close();
-    setTimeout(() => review(items, result.trip_name, target), 300);
+    setTimeout(() => review(items, result.trip_name, target, { rawText: ocrText, alternate: mode === 'alt' }), 300);
   } catch (e) {
     console.error(e);
     const msg = friendlyError(e);
-    prog.innerHTML = `<div class="small" style="color:var(--red)">${esc(msg)}</div>`;
+    prog.innerHTML = `<div class="small" style="color:var(--red)">${esc(msg)}</div>${useAI ? `<div style="margin-top:10px"><button class="btn secondary" id="imp-local">端末の中で読み取る（AIを使わない）</button></div>` : ''}`;
+    $('#imp-local', body)?.addEventListener('click', () => run(body, close, files, mode, target, hint, false));
     go.disabled = false;
   }
 }

@@ -1,10 +1,11 @@
 // オフライン用：アプリの部品を保存しておき、通信が無くても開けるようにする
-const VERSION = 'tabinavi-v3';
+const VERSION = 'tabinavi-v4';
 const CORE = [
   './', './index.html', './app.css', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
   './js/main.js', './js/util.js', './js/alarm.js', './js/alarm-ui.js', './js/sounds.js', './js/home.js', './js/trip.js',
   './firebase-config.js', './js/ai.js', './js/parse.js', './js/transit.js', './js/weather.js', './js/settings.js', './js/tools.js', './js/shiori.js', './js/social.js',
+  './js/imageprep.js', './js/planner.js',
 ];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));

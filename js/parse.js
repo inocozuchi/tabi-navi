@@ -13,6 +13,35 @@ export function normalize(text) {
     .replace(/\u3000/g, ' ').replace(/[ \t]+/g, ' ').replace(/\r/g, '');
 }
 
+// 写真の文字読み取り（Tesseract）の結果を整える
+//  ・日本語の文字の間に入る余計な空白を取る（「東 京 駅」→「東京駅」）
+//  ・時刻の読み間違いを直す（「1O:3O」「12;30」「12 : 30」→「10:30」「12:30」）
+//  ・よくある漢字の読み間違い（時刻のあとの「癸」→「発」、カタカナの間の「一」→「ー」など）
+//  ・記号だけの行（アイコンのかけら）を消す
+const CJK = '\\u3005\\u3040-\\u30ff\\u3400-\\u9fff\\uf900-\\ufaff\\uff01-\\uff60';
+export function cleanOcrText(text) {
+  let s = String(text || '').replace(/\r/g, '')
+    .replace(/[０-９：]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+  const between = new RegExp(`([${CJK}])[ \\t]+(?=[${CJK}])`, 'g');
+  s = s.replace(between, '$1').replace(between, '$1');
+  // 数字と単位の間の空白（「10 月 27 日」「14 番線」）
+  s = s.replace(/(\d)[ \t]+(?=(?:年|月|日|時|分|円|番線|号車|号|番|席|泊|名|便)(?![a-zA-Z]))/g, '$1')
+    .replace(/(年|月)[ \t]+(?=\d)/g, '$1');
+  // 時刻らしい所の O/o/l/I/| を数字に
+  const fix = (t) => t.replace(/[Oo]/g, '0').replace(/[lI|]/g, '1');
+  s = s.replace(/(^|[^\dA-Za-z])([0-2]?[\dOolI|])[ \t]*[:;：][ \t]*([0-5Oo][\dOolI|])(?![\dA-Za-z])/g, (m, a, h, mi) => `${a}${fix(h)}:${fix(mi)}`);
+  // 時刻のあとの「発」「着」の読み間違い
+  s = s.replace(/(\d:\d\d)[ \t]*癸/g, '$1発').replace(/(\d:\d\d)[ \t]*看/g, '$1着');
+  // カタカナの間の「一」（漢数字のいち）は長音の「ー」
+  s = s.replace(/([ァ-ヴ])[一―](?![一-龯])/g, '$1ー');
+  // 円記号の読み間違い（「半1,200」「Y1,200」）
+  s = s.replace(/(^|[^A-Za-z])[半Y](?=\d{1,3}(?:,\d{3})+)/gm, '$1¥');
+  // 空の行は予約の区切りとして残す
+  return s.split('\n').map((l) => l.replace(/[ \t]+/g, ' ').trim())
+    .filter((l) => !l || (/[\p{L}\p{N}]/u.test(l) && !/^[A-Za-z]$/.test(l) && !/^[^\p{N}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{1,2}$/u.test(l)))
+    .join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 const IATA = {
   HND: '羽田空港', NRT: '成田空港', KIX: '関西空港', ITM: '伊丹空港', NGO: '中部国際空港', UKB: '神戸空港', CTS: '新千歳空港', FUK: '福岡空港',
   OKA: '那覇空港', KOJ: '鹿児島空港', KMJ: '熊本空港', NGS: '長崎空港', OIT: '大分空港', KMI: '宮崎空港', HIJ: '広島空港', OKJ: '岡山空港',
