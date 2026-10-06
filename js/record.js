@@ -199,16 +199,16 @@ function openMemo() {
   const at = Math.round((Date.now() - rec.t0) / 1000);
   const box = document.createElement('div');
   box.id = 'rec-memo';
-  box.style.cssText = 'position:fixed;inset:0;z-index:2100;background:#000;color:#8e8e93;display:flex;flex-direction:column;padding:calc(env(safe-area-inset-top,0px) + 16px) 16px calc(env(safe-area-inset-bottom,0px) + 16px);gap:12px;font-family:-apple-system,sans-serif';
+  box.style.cssText = 'position:fixed;inset:0;z-index:2100;background:#fff;color:#3c3c43;display:flex;flex-direction:column;padding:calc(env(safe-area-inset-top,0px) + 16px) 16px calc(env(safe-area-inset-bottom,0px) + 16px);gap:12px;font-family:-apple-system,sans-serif';
   box.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;font-size:15px"><span>録画中 ${fmtT(at)} のメモ</span><span style="font-size:12px">録画は続いています</span></div>
-    <textarea id="rm-t" placeholder="タップして入力（音声入力もできます）" style="flex:1;background:#0c0c0c;border:1px solid #2a2a2a;border-radius:14px;color:#c7c7cc;font-size:18px;line-height:1.5;padding:14px;outline:none;resize:none;-webkit-user-select:text;user-select:text"></textarea>
+    <div style="display:flex;align-items:center;justify-content:space-between;font-size:15px"><span>録画中 ${fmtT(at)} のメモ</span><span style="font-size:12px;color:#8e8e93">録画は続いています</span></div>
+    <textarea id="rm-t" placeholder="タップして入力（音声入力もできます）" style="flex:1;background:#f2f2f7;border:1px solid #d1d1d6;border-radius:14px;color:#000;font-size:18px;line-height:1.5;padding:14px;outline:none;resize:none;-webkit-user-select:text;user-select:text"></textarea>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      ${['絶景', 'トンネル', '駅', '橋', '海', '山'].map((t) => `<button data-q="${t}" style="background:#161616;color:#8e8e93;border:0;border-radius:16px;height:34px;padding:0 14px;font-size:15px">${t}</button>`).join('')}
+      ${['絶景', 'トンネル', '駅', '橋', '海', '山'].map((t) => `<button data-q="${t}" style="background:#e5e5ea;color:#3c3c43;border:0;border-radius:16px;height:34px;padding:0 14px;font-size:15px">${t}</button>`).join('')}
     </div>
     <div style="display:flex;gap:10px">
-      <button id="rm-x" style="flex:1;height:50px;border-radius:14px;border:0;background:#161616;color:#8e8e93;font-size:17px">メモしない</button>
-      <button id="rm-ok" style="flex:1.4;height:50px;border-radius:14px;border:0;background:#1c2a44;color:#7fb2ff;font-size:17px;font-weight:600">保存して録画へ戻る</button>
+      <button id="rm-x" style="flex:1;height:50px;border-radius:14px;border:0;background:#e5e5ea;color:#3c3c43;font-size:17px">メモしない</button>
+      <button id="rm-ok" style="flex:1.4;height:50px;border-radius:14px;border:0;background:#007aff;color:#fff;font-size:17px;font-weight:600">保存して録画へ戻る</button>
     </div>`;
   document.body.append(box);
   const ta = box.querySelector('#rm-t');
