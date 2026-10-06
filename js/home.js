@@ -7,7 +7,6 @@ import { openSleep, alarmFor } from './alarm-ui.js';
 import { openImport, openPaste } from './ai.js';
 import { openMemos, openWishlist, openBudget, openPacking, openCurrency } from './tools.js';
 import { openShiori } from './shiori.js';
-import { openRecord } from './record.js';
 import { openSocial, social, startLocation } from './social.js';
 import { geocode, roughMove, distText, tripDelays, transitLinks, mapsSearchUrl } from './transit.js';
 
@@ -215,7 +214,6 @@ const TILES = [
   ['pack', '持ち物', I.bag, 'var(--brown)', 'チェックリスト'],
   ['fx', '通貨換算', I.yen, 'var(--cyan)', '外貨 ⇄ 円'],
   ['social', '旅仲間', '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20c0-3.5 2.7-6 6-6s6 2.5 6 6M15 14.5c3 0 6 1.8 6 5.5"/></svg>', 'var(--purple)', '共有コードで同期・チャット'],
-  ['record', '車窓録画', '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="3"/><path d="M16 10.5l5-3v9l-5-3"/></svg>', '#C0392B', '画面を真っ黒にして録画（電池節約）'],
   ['sleep', 'おやすみモード', I.moon, '#3b2a8f', 'アラームの待機を始める'],
 ];
 export function renderTools() {
@@ -234,7 +232,7 @@ const rowTile = ([k, n, ic, c, sub]) => `<button class="row icon-row" data-t="${
 export function bindTools() {
   $('#view-tools').addEventListener('click', (e) => {
     const t = e.target.closest('[data-t]')?.dataset.t;
-    const map = { paste: () => openPaste({}), import: () => openImport({}), wish: openWishlist, shiori: openShiori, memo: openMemos, budget: openBudget, pack: openPacking, fx: openCurrency, social: openSocial, sleep: openSleep, record: openRecord };
+    const map = { paste: () => openPaste({}), import: () => openImport({}), wish: openWishlist, shiori: openShiori, memo: openMemos, budget: openBudget, pack: openPacking, fx: openCurrency, social: openSocial, sleep: openSleep };
     map[t]?.();
   });
 }
