@@ -39,12 +39,26 @@ export const yen = (n, cur = 'JPY') => {
   catch { return `${n} ${cur}`; }
 };
 
+// ===== AI（Claude / Gemini）=====
+// 使う AI：選んでいる方のキーがあればそれ、無ければキーが入っているもう一方
+export function aiProvider() {
+  const s = store.data.settings;
+  const want = s.aiProvider === 'claude' ? 'claude' : 'gemini';
+  const has = (p) => !!(p === 'claude' ? s.apiKey : s.geminiKey);
+  return has(want) ? want : has(want === 'claude' ? 'gemini' : 'claude') ? (want === 'claude' ? 'gemini' : 'claude') : '';
+}
+export const aiOn = () => !!aiProvider();
+export const aiName = () => ({ claude: 'Claude', gemini: 'Gemini' })[aiProvider()] || 'AI';
+export const aiCompany = () => ({ claude: 'Anthropic', gemini: 'Google' })[aiProvider()] || '';
+
 // ===== 保存（小さなデータは localStorage、画像や音は IndexedDB） =====
 const KEY = 'tabinavi.v1';
 const DEFAULT = {
   settings: {
     theme: 'auto', showSeconds: true,
-    apiKey: '', aiModel: 'claude-opus-5-5',
+    aiProvider: 'gemini', // gemini / claude（キーが入っている方を使う）
+    apiKey: '', aiModel: 'claude-opus-5-5', // Claude
+    geminiKey: '', geminiModel: 'gemini-flash-latest', // Gemini
     place: null, // {name, lat, lon}（null は現在地）
     alarmMode: 'saver', // saver=イヤホン節電（画面オンで待機） / stream=確実（無音を流して待機）
     earMic: false, // マイクの一覧でイヤホンを確かめる

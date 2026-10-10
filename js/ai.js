@@ -1,7 +1,7 @@
 // スクリーンショットから旅程をつくる
-//  ・Claude API キーがある時：画像を Claude に読ませて、予定を構造化して返してもらう（高精度）
+//  ・AI（Claude / Gemini）の API キーがある時：画像を AI に読ませて、予定を構造化して返してもらう（高精度）
 //  ・キーが無い時：端末の中で文字を読み取り（Tesseract.js）、簡単な規則で予定に分ける（精度は控えめ）
-import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, blobToBase64, blobs, pad, toLocalISO, segment } from './util.js';
+import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, blobToBase64, blobs, pad, toLocalISO, segment, aiOn, aiName, aiCompany, aiProvider } from './util.js';
 import { currentTrip, ensureTrip, renderTrip, editItem, events } from './trip.js';
 import { parseAny, cleanOcrText, findDate, layoutLines } from './parse.js';
 import { readPdf, isPdf, pdfThumb } from './pdfimport.js';
@@ -58,8 +58,16 @@ async function sdk() {
   return (await sdkPromise).default;
 }
 
-// Claude に画像や文章を渡し、schema の形の JSON で答えてもらう（共通）
-export async function callClaude({ system, content, schema, effort = 'medium' }) {
+// AI（Claude か Gemini）に画像や文章を渡し、schema の形の JSON で答えてもらう（共通）
+//  content は Claude の形（{type:'text'} / {type:'image', source:{base64}}）。Gemini には形を変えて渡す
+export async function callAI(opts) {
+  const p = aiProvider();
+  if (!p) throw new Error('「設定」で AI の API キーを入れてください');
+  return p === 'gemini' ? callGemini(opts) : callClaudeAPI(opts);
+}
+export const callClaude = callAI;
+
+async function callClaudeAPI({ system, content, schema, effort = 'medium' }) {
   const s = store.data.settings;
   const Anthropic = await sdk();
   const client = new Anthropic({ apiKey: s.apiKey, dangerouslyAllowBrowser: true });
@@ -83,6 +91,80 @@ export async function callClaude({ system, content, schema, effort = 'medium' })
   if (res.stop_reason === 'max_tokens') throw new Error('内容が多すぎて途中で切れました。分けて送ってください');
   const text = res.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
   return JSON.parse(text);
+}
+
+// ----- Gemini（Google AI Studio の API キー）-----
+const GEMINI = 'https://generativelanguage.googleapis.com/v1beta/';
+// 古い形の schema（responseSchema）は additionalProperties を受け付けないので外す
+const stripSchema = (o) => Array.isArray(o) ? o.map(stripSchema) : o && typeof o === 'object'
+  ? Object.fromEntries(Object.entries(o).filter(([k]) => k !== 'additionalProperties').map(([k, v]) => [k, stripSchema(v)])) : o;
+async function geminiFetch(path, body) {
+  const s = store.data.settings;
+  const r = await fetch(GEMINI + path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': s.geminiKey },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const m = j?.error?.message || `HTTP ${r.status}`;
+    const e = new Error(m);
+    e.status = /API key not valid|API_KEY_INVALID/i.test(m) ? 401 : r.status;
+    e.provider = 'gemini';
+    throw e;
+  }
+  return j;
+}
+// 名前で指定したモデルが無くなっていた時：使えるモデルの中から Flash を選ぶ
+const swapped = {};
+async function geminiFallbackModel(cur) {
+  const j = await geminiFetch('models?pageSize=200');
+  const ok = (j.models || []).filter((m) => m.supportedGenerationMethods?.includes('generateContent')).map((m) => m.name.replace(/^models\//, ''));
+  const want = /lite/.test(cur) ? /flash-lite/ : /pro/.test(cur) ? /pro/ : /flash(?!-lite)/;
+  return ok.filter((n) => want.test(n) && !/tts|image|audio|live|embed|thinking-exp/.test(n)).sort().reverse()[0] || ok.find((n) => /flash/.test(n));
+}
+async function callGemini({ system, content, schema }) {
+  const s = store.data.settings;
+  const parts = content.map((b) => b.type === 'image' ? { inline_data: { mime_type: b.source.media_type, data: b.source.data } } : { text: b.text });
+  const base = { systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts }] };
+  // 形の指定のしかた：新しい形 → 古い形 → 文章で指示（モデルによって受け付ける形が違う）
+  const configs = [
+    { responseMimeType: 'application/json', responseJsonSchema: schema },
+    { responseMimeType: 'application/json', responseSchema: stripSchema(schema) },
+    { responseMimeType: 'application/json' },
+  ];
+  let model = s.geminiModel || 'gemini-flash-latest', lastErr;
+  if (swapped[model]) model = swapped[model];
+  for (let i = 0; i < configs.length; i++) {
+    const body = { ...base, generationConfig: { ...configs[i], maxOutputTokens: 32768 } };
+    if (i === 2) body.contents = [{ role: 'user', parts: [...parts, { text: `次の JSON Schema の形の JSON だけで答えてください:\n${JSON.stringify(schema)}` }] }];
+    let res;
+    try {
+      res = await geminiFetch(`models/${model}:generateContent`, body);
+    } catch (e) {
+      lastErr = e;
+      if (e.status === 404) {
+        const alt = await geminiFallbackModel(model).catch(() => null);
+        if (alt && alt !== model) { swapped[s.geminiModel || 'gemini-flash-latest'] = alt; model = alt; i--; continue; }
+      }
+      if (e.status === 400 && i < configs.length - 1) continue;
+      throw e;
+    }
+    const c = res.candidates?.[0];
+    if (!c) throw new Error(res.promptFeedback?.blockReason ? '読み取れませんでした（AIが処理を断りました）' : 'AIから答えが返りませんでした');
+    if (c.finishReason === 'MAX_TOKENS') throw new Error('内容が多すぎて途中で切れました。分けて送ってください');
+    if (/SAFETY|PROHIBITED|BLOCKLIST|RECITATION/.test(c.finishReason || '')) throw new Error('読み取れませんでした（AIが処理を断りました）');
+    const text = (c.content?.parts || []).filter((x) => !x.thought && x.text).map((x) => x.text).join('');
+    try { return JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')); }
+    catch (e) { lastErr = new Error('AIの答えを読めませんでした。もう一度お試しください'); if (i < configs.length - 1) continue; }
+  }
+  throw lastErr;
+}
+
+// キーが使えるか確かめる（設定の「接続テスト」）
+export async function testAI() {
+  const r = await callAI({ system: 'テストです。', content: [{ type: 'text', text: '{"ok": true} と答えてください。' }], schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' } } }, effort: 'low' });
+  return !!r?.ok;
 }
 export const todayText = () => { const n = new Date(); return `今日は ${n.getFullYear()}年${n.getMonth() + 1}月${n.getDate()}日（${'日月火水木金土'[n.getDay()]}）です。`; };
 export async function imageContent(blobsList) {
@@ -111,15 +193,17 @@ export async function prepareImages(files, onProg) {
 export function friendlyError(e) {
   let msg = e?.message || String(e);
   if (e?.status === 401) msg = 'API キーが正しくありません（設定を確認してください）';
-  else if (e?.status === 429 || e?.status === 529) msg = '混み合っています。少し待ってからもう一度お試しください';
+  else if (e?.status === 403) msg = 'この API キーでは使えません（キーの制限や、Google AI Studio の設定を確認してください）';
+  else if (e?.status === 429 && e?.provider === 'gemini') msg = '無料で使える回数の上限です。1分ほど待つか、明日もう一度お試しください（モデルを Flash-Lite にすると回数が増えます）';
+  else if (e?.status === 429 || e?.status === 529 || e?.status === 503) msg = '混み合っています。少し待ってからもう一度お試しください';
   else if (e?.status === 413) msg = '画像が大きすぎます。枚数を減らしてお試しください';
   else if (/fetch|network|load failed/i.test(msg)) msg = '通信できませんでした。電波を確認してください';
   return msg;
 }
 
-async function askClaude(content, hint, alternate) {
+async function askAI(content, hint, alternate) {
   content = [...content, { type: 'text', text: `${todayText()}${alternate ? 'これらの画像は「予備ルート」です。すべて is_alternate=true にしてください。' : ''}${hint ? `\n補足: ${hint}` : ''}\n画像から旅程の予定を取り出してください。` }];
-  return callClaude({ system: SYSTEM, content, schema: SCHEMA });
+  return callAI({ system: SYSTEM, content, schema: SCHEMA });
 }
 
 // ===== キーが無い時：端末内の文字読み取り＋規則 =====
@@ -199,7 +283,7 @@ export function openPaste({ alternate = false, targetId = null, initialText = ''
   const s = store.data.settings;
   let mode = alternate ? 'alt' : 'main';
   let target = targetId;
-  let useAI = !!s.apiKey;
+  let useAI = aiOn();
   sheet({
     title: '文字から取り込む', left: 'キャンセル',
     build(body, close) {
@@ -209,7 +293,7 @@ export function openPaste({ alternate = false, targetId = null, initialText = ''
         <div class="hstack" style="margin-top:8px"><button class="btn small secondary" id="ps-clip">${I.copy}クリップボードから貼り付け</button><button class="btn small secondary" id="ps-clear">消す</button></div>
         <div class="field-label">取り込み方</div>
         <div class="segment" id="ps-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
-        ${s.apiKey ? `<div class="list"><div class="row"><div class="grow">AI（Claude）で読む<div class="sub">オフにすると端末の中だけで読み取ります（無料）</div></div><label class="switch"><input type="checkbox" id="ps-ai" ${useAI ? 'checked' : ''}><span></span></label></div></div>` : ''}
+        ${aiOn() ? `<div class="list"><div class="row"><div class="grow">AI（${aiName()}）で読む<div class="sub">オフにすると端末の中だけで読み取ります（無料）</div></div><label class="switch"><input type="checkbox" id="ps-ai" ${useAI ? 'checked' : ''}><span></span></label></div></div>` : ''}
         <div class="section-foot">💡 写真やスクショの文字は、iPhoneの「写真」アプリで画像を開き、右下の<b>テキスト認識ボタン</b>→「すべてをコピー」でコピーできます（無料・高精度）。</div>
         <div style="margin-top:14px"><button class="btn" id="ps-go">${I.sparkles}読み取る</button></div>
         <div id="ps-prog" style="margin-top:12px"></div>`;
@@ -225,9 +309,9 @@ export function openPaste({ alternate = false, targetId = null, initialText = ''
         e.target.disabled = true;
         try {
           let raw, name = '';
-          if (useAI && s.apiKey) {
+          if (useAI && aiOn()) {
             prog.innerHTML = '<div class="hstack small"><span class="spinner"></span>AIが読み取っています…</div>';
-            const r = await callClaude({ system: SYSTEM, content: [{ type: 'text', text: `${todayText()}${mode === 'alt' ? 'これは「予備ルート」です。すべて is_alternate=true にしてください。' : ''}\n次の文章から旅程の予定を取り出してください（source_image は 0）。\n---\n${text}` }], schema: SCHEMA, effort: 'low' });
+            const r = await callAI({ system: SYSTEM, content: [{ type: 'text', text: `${todayText()}${mode === 'alt' ? 'これは「予備ルート」です。すべて is_alternate=true にしてください。' : ''}\n次の文章から旅程の予定を取り出してください（source_image は 0）。\n---\n${text}` }], schema: SCHEMA, effort: 'low' });
             raw = r.items; name = r.trip_name;
           } else {
             raw = parseAny(text);
@@ -256,7 +340,7 @@ export function openImport({ alternate = false, targetId = null }) {
   const files = [];
   let mode = alternate ? 'alt' : 'main';
   let target = targetId;
-  let useAI = !!s.apiKey;
+  let useAI = aiOn();
   let hint = '';
   let onPaste = null;
   const addFiles = (list) => { for (const f of list) if (f && (isPdf(f) || /^image\//.test(f.type || 'image/'))) files.push({ file: f, url: isPdf(f) ? '' : URL.createObjectURL(f), pdf: isPdf(f), name: f.name }); };
@@ -280,8 +364,8 @@ export function openImport({ alternate = false, targetId = null }) {
           <div class="segment" id="imp-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
           ${mode === 'alt' && moves.length ? `<div class="list"><div class="row"><div style="flex:none">どの予定の予備？</div><select id="imp-target"><option value="">自動で判断</option>${moves.map((e) => `<option value="${e.it.id}" ${target === e.it.id ? 'selected' : ''}>${e.at ? hm(e.at) : ''} ${esc(e.it.title || '')} ${esc(e.it.from || '')}→${esc(e.it.to || '')}</option>`).join('')}</select></div></div>` : ''}
           <div class="list" style="margin-top:12px"><div class="row"><div style="flex:none">補足</div><input type="text" id="imp-hint" class="left" placeholder="例：10月3日の出発です（任意）" value="${esc(hint)}"></div>
-          ${s.apiKey ? `<div class="row"><div class="grow">AI（Claude）で読む<div class="sub">オフにすると端末の中だけで読み取ります（無料）</div></div><label class="switch"><input type="checkbox" id="imp-ai" ${useAI ? 'checked' : ''}><span></span></label></div>` : ''}</div>
-          <div class="section-foot">${useAI && s.apiKey ? `${I.sparkles} AI（Claude）で読み取ります。画像は読み取りのために Anthropic に送られます。` : `端末の中で読み取ります（無料・読み取り後に直せます）。<b>PDF</b>は文字がそのまま入っているので、いちばん正確です。写真の文字読み取りは、色付きの表や小さい字で間違えることがあります。${s.apiKey ? '' : '「設定」で API キーを入れると、写真もずっと正確に読めます。'}`}</div>
+          ${aiOn() ? `<div class="row"><div class="grow">AI（${aiName()}）で読む<div class="sub">オフにすると端末の中だけで読み取ります（無料）</div></div><label class="switch"><input type="checkbox" id="imp-ai" ${useAI ? 'checked' : ''}><span></span></label></div>` : ''}</div>
+          <div class="section-foot">${useAI && aiOn() ? `${I.sparkles} AI（${aiName()}）で読み取ります。画像は読み取りのために ${aiCompany()} に送られます。` : `端末の中で読み取ります（無料・読み取り後に直せます）。<b>PDF</b>は文字がそのまま入っているので、いちばん正確です。写真の文字読み取りは、色付きの表や小さい字で間違えることがあります。${aiOn() ? '' : '「設定」で Gemini か Claude の API キーを入れると、写真もずっと正確に読めます（Gemini は無料枠あり）。'}`}</div>
           <div style="margin-top:16px"><button class="btn" id="imp-go" ${files.length ? '' : 'disabled'}>${I.sparkles}${files.length ? `${files.length}件を読み取る` : '写真かPDFを選んでください'}</button></div>
           <div id="imp-prog" style="margin-top:14px"></div>`;
         const th = $('#imp-th', body);
@@ -309,7 +393,7 @@ export function openImport({ alternate = false, targetId = null }) {
         $('#imp-ai', body)?.addEventListener('change', (e) => { useAI = e.target.checked; draw(); });
         segment($('#imp-mode', body), (v) => { mode = v; draw(); });
         $('#imp-target', body)?.addEventListener('change', (e) => { target = e.target.value || null; });
-        $('#imp-go', body).onclick = () => run(body, close, files, mode, target, hint, useAI && !!s.apiKey);
+        $('#imp-go', body).onclick = () => run(body, close, files, mode, target, hint, useAI && aiOn());
       };
       onPaste = (e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { addFiles(fs); draw(); } };
       document.addEventListener('paste', onPaste);
@@ -344,7 +428,7 @@ async function run(body, close, files, mode, target, hint, useAI) {
       views = [...prep.views, ...views];
       say('AIが読み取っています…（10〜60秒ほど）', 0.5);
       const content = [...prep.content, ...pdfTexts.map((t, k) => ({ type: 'text', text: `PDF${k + 1}の文字:\n${t}` }))];
-      result = await askClaude(content, hint, mode === 'alt');
+      result = await askAI(content, hint, mode === 'alt');
     } else {
       const texts = [...pdfTexts];
       const imgViews = [];

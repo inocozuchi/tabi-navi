@@ -1,5 +1,5 @@
 // 旅程の自動最適化・移動時間・乗換考慮・おすすめスポット提案ロジック
-import { uid, store, parseLocal, toLocalISO, dayKey, mdw, hm, dur, pad, TYPES, TRANSPORT } from './util.js';
+import { aiOn, uid, store, parseLocal, toLocalISO, dayKey, mdw, hm, dur, pad, TYPES, TRANSPORT } from './util.js';
 import { callClaude, todayText } from './ai.js';
 import { geocode, spotSearch } from './transit.js';
 
@@ -120,8 +120,8 @@ export async function autoOptimizeSchedule(trip, options = { includeSuggestions:
   if (!trip?.items?.length) return trip;
   const s = store.data.settings;
 
-  // Claude APIキーがある場合は高度な自動最適化・おすすめスポット組み込みを実施
-  if (s.apiKey) {
+  // AI の APIキーがある場合は高度な自動最適化・おすすめスポット組み込みを実施
+  if (aiOn()) {
     const prompt = `あなたは旅行行程のプロフェッショナルです。以下の旅行の予定表を見直し、より現実的で快適なスケジュールに最適化してください。
 要件:
 1. 移動時間や乗り換え時間（新幹線15分前、飛行機50分前、通常乗り換え8-10分）に無理がないか確認し、必要に応じて発着時刻を調整。

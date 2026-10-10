@@ -25,20 +25,35 @@ export function renderSettings() {
       <button class="row icon-row" id="st-place"><span class="ico" style="background:var(--cyan)">${I.sun}</span><div class="grow">天気の場所</div><span class="val">${esc(s.place?.name || '現在地')}</span><span class="chev">${I.chev}</span></button>
       <button class="row icon-row" id="st-notify"><span class="ico" style="background:var(--red)">${I.info}</span><div class="grow">通知を許可</div><span class="val">${window.Notification ? ({ granted: '許可済み', denied: '拒否', default: '未設定' })[Notification.permission] : '非対応'}</span></button>
     </div>
-    <div class="section-title">AI（スクショの読み取り・旅程の提案）</div>
+    <div class="section-title">AI（写真の読み取り・旅程の提案）</div>
+    <div class="segment" id="st-ai"><button data-v="gemini" class="${s.aiProvider !== 'claude' ? 'active' : ''}">Gemini</button><button data-v="claude" class="${s.aiProvider === 'claude' ? 'active' : ''}">Claude</button></div>
+    ${s.aiProvider !== 'claude' ? `
     <div class="list">
-      <div class="row icon-row"><span class="ico" style="background:var(--indigo)">${I.key}</span><div style="flex:none">API キー</div><input type="password" id="st-key" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"></div>
-      <div class="row icon-row"><span class="ico" style="background:var(--purple)">${I.sparkles}</span><div class="grow">モデル</div><select id="st-model">${[['claude-opus-5-5', 'Opus 5.5（高精度）'], ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-haiku-4-5', 'Haiku 4.5（最安）']].map(([v, n]) => `<option value="${v}" ${s.aiModel === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <div class="row icon-row"><span class="ico" style="background:var(--blue)">${I.key}</span><div style="flex:none">API キー</div><input type="password" id="st-gkey" value="${esc(s.geminiKey)}" placeholder="AIza…" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="row icon-row"><span class="ico" style="background:var(--purple)">${I.sparkles}</span><div class="grow">モデル</div><select id="st-gmodel">${[['gemini-flash-latest', 'Flash（おすすめ）'], ['gemini-flash-lite-latest', 'Flash-Lite（最安・回数多め）'], ['gemini-pro-latest', 'Pro（高精度・有料のみ）']].map(([v, n]) => `<option value="${v}" ${s.geminiModel === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <button class="row icon-row" id="st-test"><span class="ico" style="background:var(--green)">${I.check}</span><div class="grow">接続テスト</div><span class="val" id="st-test-v">${s.geminiKey ? '' : 'キー未入力'}</span></button>
+      <button class="row icon-row" id="st-ghelp"><span class="ico" style="background:var(--orange)">${I.info}</span><div class="grow">APIキーの作り方</div><span class="chev">${I.chev}</span></button>
     </div>
-    <div class="section-foot">Claude の API キーを入れると、スクショや文章の読み取りがとても正確になり、旅程の提案も使えます。キーは <a href="https://console.anthropic.com/" target="_blank">console.anthropic.com</a> で作ります（Claude の Pro プランとは別の、使った分だけの支払い）。キーはこの端末の中にだけ保存されます。</div>
+    <div class="section-foot">キーは <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> で無料で作れます。無料枠の中なら料金はかかりません（1日・1分あたりの回数に上限あり）。無料枠では、送った内容が Google のサービス改善に使われることがあります。キーはこの端末の中にだけ保存されます。</div>
+    <div class="list" style="margin-top:10px">
+      <div class="row"><div class="grow small">目安の料金（旅程1回・スクショ3枚ほど）</div></div>
+      <div class="row"><div class="grow small">無料枠の中</div><span class="val small">0円</span></div>
+      <div class="row"><div class="grow small">Flash-Lite（有料にした時）</div><span class="val small">約1円</span></div>
+      <div class="row"><div class="grow small">Flash（有料にした時）</div><span class="val small">約2〜3円</span></div>
+    </div>` : `
+    <div class="list">
+      <div class="row icon-row"><span class="ico" style="background:var(--indigo)">${I.key}</span><div style="flex:none">API キー</div><input type="password" id="st-key" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="row icon-row"><span class="ico" style="background:var(--purple)">${I.sparkles}</span><div class="grow">モデル</div><select id="st-model">${[['claude-opus-5-5', 'Opus 5.5（高精度）'], ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-haiku-4-5', 'Haiku 4.5（最安）']].map(([v, n]) => `<option value="${v}" ${s.aiModel === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <button class="row icon-row" id="st-test"><span class="ico" style="background:var(--green)">${I.check}</span><div class="grow">接続テスト</div><span class="val" id="st-test-v">${s.apiKey ? '' : 'キー未入力'}</span></button>
+    </div>
+    <div class="section-foot">キーは <a href="https://console.anthropic.com/" target="_blank" rel="noopener">console.anthropic.com</a> で作ります（Claude の Pro プランとは別の、使った分だけの支払い）。キーはこの端末の中にだけ保存されます。</div>
     <div class="list" style="margin-top:10px">
       <div class="row"><div class="grow small">目安の料金（スクショ1枚）</div></div>
       <div class="row"><div class="grow small">Haiku 4.5</div><span class="val small">約1円</span></div>
       <div class="row"><div class="grow small">Sonnet 5.5</div><span class="val small">約2〜3円</span></div>
       <div class="row"><div class="grow small">Opus 5.5</div><span class="val small">約4〜8円</span></div>
-      <div class="row"><div class="grow small">文字の貼り付け（1回）</div><span class="val small">上の半分ほど</span></div>
-    </div>
-    <div class="section-foot">キーが無くても、文字の貼り付け取り込みは端末の中だけで無料で動きます。スクショは iPhone の「写真」でテキスト認識 →「すべてをコピー」して貼り付けるのがおすすめです。</div>
+    </div>`}
+    <div class="section-foot">キーが無くても、PDF と文字の貼り付けは端末の中だけで無料で正確に読めます。${s.geminiKey && s.apiKey ? `両方のキーがある時は、上で選んだ方を使います。` : ''}</div>
     <div class="section-title">アラーム</div>
     <div class="list">
       <button class="row icon-row" id="st-alarmhelp"><span class="ico" style="background:var(--orange)">${I.headphones}</span><div class="grow">アラームのしくみと注意</div><span class="chev">${I.chev}</span></button>
@@ -66,14 +81,26 @@ export function renderSettings() {
   $('#st-sec').onchange = (e) => { s.showSeconds = e.target.checked; store.save(); };
   $('#st-place').onclick = () => pickPlace(renderSettings);
   $('#st-notify').onclick = async () => { askNotify(); setTimeout(renderSettings, 1500); };
-  $('#st-key').onchange = (e) => { s.apiKey = e.target.value.trim(); store.save(); toast(s.apiKey ? 'API キーを保存しました' : 'API キーを消しました'); };
-  $('#st-model').onchange = (e) => { s.aiModel = e.target.value; store.save(); };
+  segment($('#st-ai'), (v) => { s.aiProvider = v; store.save(); renderSettings(); });
+  const keyIn = (id, k) => { const f = $(id); if (f) f.onchange = (e) => { s[k] = e.target.value.replace(/\s/g, ''); store.save(); toast(s[k] ? 'API キーを保存しました' : 'API キーを消しました'); const v = $('#st-test-v'); if (v) v.textContent = s[k] ? '' : 'キー未入力'; }; };
+  keyIn('#st-key', 'apiKey'); keyIn('#st-gkey', 'geminiKey');
+  $('#st-model')?.addEventListener('change', (e) => { s.aiModel = e.target.value; store.save(); });
+  $('#st-gmodel')?.addEventListener('change', (e) => { s.geminiModel = e.target.value; store.save(); });
+  $('#st-ghelp')?.addEventListener('click', geminiHelp);
+  $('#st-test').onclick = async () => {
+    const v = $('#st-test-v');
+    if (!(s.aiProvider === 'claude' ? s.apiKey : s.geminiKey)) { toast('先に API キーを入れてください'); return; }
+    v.innerHTML = '<span class="spinner"></span>';
+    const { testAI, friendlyError } = await import('./ai.js');
+    try { await testAI(); v.innerHTML = `<span style="color:var(--green)">${I.check} 使えます</span>`; haptic(); }
+    catch (e) { v.textContent = '失敗'; toast(friendlyError(e), 5000); }
+  };
   $('#st-alarmhelp').onclick = alarmHelp;
   $('#st-install').onclick = installHelp;
   $('#st-name').onchange = async (e) => { const { rename } = await import('./social.js'); rename(e.target.value.trim()); };
   $('#st-fb').onclick = firebaseHelp;
   $('#st-export').onclick = async () => {
-    const data = { ...store.data, settings: { ...store.data.settings, apiKey: '' } };
+    const data = { ...store.data, settings: { ...store.data.settings, apiKey: '', geminiKey: '' } };
     download(`旅ナビ_バックアップ_${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 1));
   };
   $('#st-import').onchange = async (e) => {
@@ -81,8 +108,8 @@ export function renderSettings() {
       const j = JSON.parse(await e.target.files[0].text());
       if (!j.settings) throw 0;
       if (!(await confirmBox('バックアップから戻しますか？', '今のデータは置き換わります', '戻す', { destructive: true }))) return;
-      const key = store.data.settings.apiKey;
-      localStorage.setItem('tabinavi.v1', JSON.stringify({ ...j, settings: { ...j.settings, apiKey: key } }));
+      const { apiKey, geminiKey } = store.data.settings;
+      localStorage.setItem('tabinavi.v1', JSON.stringify({ ...j, settings: { ...j.settings, apiKey, geminiKey } }));
       location.reload();
     } catch { toast('読み込めませんでした'); }
   };
@@ -129,6 +156,30 @@ function installHelp() {
         ④ 右上の「追加」を押す<br><br>
         ホーム画面のアイコンから開くと、アプリのように全画面で使えます。オフラインでも旅程・メモ・アラームは使えます（天気・地図・AIは通信が必要）。</div>
         <div class="list"><div class="row"><div class="grow small mono" style="word-break:break-all">${esc(location.href.split('#')[0])}</div></div></div>`;
+    },
+  });
+}
+
+function geminiHelp() {
+  page({
+    title: 'Gemini のキー',
+    build(body) {
+      body.innerHTML = `<div class="card" style="line-height:1.8">
+        <b>Google AI Pro に入っていても、API キーは別に作ります</b>（作るのは無料）。<br><br>
+        ① iPhone の Safari で <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> を開く<br>
+        ② Google AI Pro と同じ Google アカウントでログイン（初回は利用規約に同意）<br>
+        ③ <b>「API キーを作成」</b>（Create API key）を押す。プロジェクトを聞かれたら新しく作るか、出てきたものを選ぶ<br>
+        ④ できたキー（<span class="mono">AIza…</span> で始まる長い文字）の横のコピーを押す<br>
+        ⑤ このアプリの「設定 → AI → Gemini」の <b>API キー</b> に貼り付ける<br>
+        ⑥ <b>「接続テスト」</b>を押して「使えます」と出れば完了</div>
+      <div class="section-title">料金について</div>
+      <div class="card small" style="line-height:1.7">
+        ・支払い設定（請求先アカウント）をしなければ<b>無料枠のまま</b>で、料金はかかりません。上限を超えると「回数の上限」と出るだけです。<br>
+        ・無料枠では、送った内容が Google のサービス改善に使われることがあります。気になる時は、予約番号などが写った画面を送らないか、有料（支払い設定あり）にしてください。<br>
+        ・Google AI Pro の特典の Google Cloud クレジット（毎月）を有料分の支払いに使える場合があります。<br>
+        ・回数が足りない時は、モデルを「Flash-Lite」にすると多く使えます。</div>
+      <div class="section-title">キーの扱い</div>
+      <div class="card small" style="line-height:1.7">キーはこの端末の中にだけ保存され、Google に読み取りを頼む時だけ使います。バックアップのファイルには入りません。他の人に見せないでください。漏れた時は AI Studio でキーを削除して作り直せます。</div>`;
     },
   });
 }

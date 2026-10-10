@@ -1,5 +1,5 @@
 // 旅の道具：行きたいリスト・メモ（写真から文字化）・リマインド・旅費・持ち物・通貨・カレンダー登録
-import { $, $$, esc, uid, store, sheet, page, toast, confirmBox, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, yen, pad, toLocalISO, shrinkImage, blobs, download, copyText, segment } from './util.js';
+import { aiOn, $, $$, esc, uid, store, sheet, page, toast, confirmBox, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, yen, pad, toLocalISO, shrinkImage, blobs, download, copyText, segment } from './util.js';
 import { callClaude, todayText, imageContent, friendlyError, ocr, review } from './ai.js';
 import { currentTrip, ensureTrip, events, editItem, renderTrip } from './trip.js';
 import { spotSearch, geocode, mapsSearchUrl } from './transit.js';
@@ -61,7 +61,7 @@ export function checkReminders(now = Date.now()) {
 async function photoToText(files, say) {
   const small = [];
   for (const f of files) small.push(await shrinkImage(f, 1568));
-  if (store.data.settings.apiKey) {
+  if (aiOn()) {
     say?.('AIが文字にしています…');
     const content = await imageContent(small);
     content.push({ type: 'text', text: '画像に写っている文字を、メモとして読みやすく書き起こしてください。部屋番号・暗証番号・集合時間・集合場所・電話番号などの大事な情報は落とさないでください。日時が書いてあれば events に入れてください（YYYY-MM-DDTHH:MM、年が無ければ今日以降で最も近い日付）。' + todayText() });
@@ -263,7 +263,7 @@ async function spotsFromPhotos(files, say) {
   const small = [];
   for (const f of files) small.push(await shrinkImage(f, 1568));
   let spots = [];
-  if (store.data.settings.apiKey) {
+  if (aiOn()) {
     say('AIが場所の情報を取り出しています…');
     const content = await imageContent(small);
     content.push({ type: 'text', text: 'これらは旅行で行きたい場所のスクリーンショット（Googleマップ、検索結果、SNS、乗換案内など）です。写っている場所・お店・宿・乗り物の情報を spots に1件ずつ取り出してください。営業時間・料金・エリア・住所が読めれば入れ、無ければ空文字。stay_minutes は一般的な滞在時間の目安。乗換案内なら category=交通 にして transport_* に区間と所要時間を入れる。' });
@@ -327,7 +327,7 @@ function suggestPlan() {
   const t = currentTrip();
   const wl = store.data.wishlist.filter((w) => !w.done);
   if (!wl.length) { toast('行きたいリストが空です'); return; }
-  if (!store.data.settings.apiKey) { toast('旅程の提案には「設定」で Claude の API キーを入れてください', 3500); return; }
+  if (!aiOn()) { toast('旅程の提案には「設定」で Gemini か Claude の API キーを入れてください', 3500); return; }
   sheet({
     title: '旅程を提案', left: '閉じる',
     build(body) {
