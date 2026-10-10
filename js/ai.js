@@ -3,7 +3,8 @@
 //  ・キーが無い時：端末の中で文字を読み取り（Tesseract.js）、簡単な規則で予定に分ける（精度は控えめ）
 import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, blobToBase64, blobs, pad, toLocalISO, segment } from './util.js';
 import { currentTrip, ensureTrip, renderTrip, editItem, events } from './trip.js';
-import { parseAny, cleanOcrText, findDate } from './parse.js';
+import { parseAny, cleanOcrText, findDate, layoutLines } from './parse.js';
+import { readPdf, isPdf, pdfThumb } from './pdfimport.js';
 import { prepForAI, prepForOCR } from './imageprep.js';
 
 const TYPE_KEYS = Object.keys(TYPES);
@@ -157,14 +158,23 @@ export async function ocr(file, onProg) {
   const parts = await prepForOCR(file);
   const w = await worker();
   let text = '';
+  const pages = [];
   try {
     for (let i = 0; i < parts.length; i++) {
       progFn = (p, kind) => onProg?.(kind === 'load' ? p * 0.1 : (i + p) / parts.length, kind);
-      const r = await w.recognize(parts[i]);
+      const r = await w.recognize(parts[i], {}, { text: true, blocks: true });
       text += r.data.text + '\n';
+      // 文字の位置から、表の行を組み立て直す（読み取りの自信が低い字は捨てる）
+      const words = r.data.words?.length ? r.data.words : (r.data.blocks || []).flatMap((b) => (b.paragraphs || []).flatMap((p) => (p.lines || []).flatMap((l) => l.words || [])));
+      const items = words.filter((wd) => wd.text?.trim() && (wd.confidence ?? 100) >= 55).map((wd) => ({ s: wd.text, x: wd.bbox.x0, y: wd.bbox.y0, w: wd.bbox.x1 - wd.bbox.x0, h: wd.bbox.y1 - wd.bbox.y0 }));
+      const bmp = await createImageBitmap(parts[i]).catch(() => null);
+      if (items.length) pages.push({ w: bmp?.width || Math.max(...items.map((x) => x.x + x.w)), h: bmp?.height || 0, items });
+      bmp?.close?.();
     }
   } finally { progFn = null; }
-  return cleanOcrText(text);
+  // 位置から組み立てた行の方が、表の旅程は正しい順になる
+  const laid = pages.length ? cleanOcrText(layoutLines(pages)) : '';
+  return laid && laid.length > 20 ? laid : cleanOcrText(text);
 }
 
 // 写真から読んだ文字を予定にする。日付が書かれていない画像は、前の画像の日付を引き継ぐ
@@ -176,14 +186,16 @@ export function itemsFromOcrTexts(texts) {
     const dl = text.split('\n').find((l) => findDate(l));
     if (dl) lastDateLine = dl;
     else if (lastDateLine) src = `${lastDateLine}\n${text}`;
-    items.push(...parseAny(src).map((x) => ({ ...x, is_alternate: false, route_group: 'main', source_image: i + 1 })));
+    items.push(...parseAny(src).map((x) => ({ ...x, is_alternate: !!x.is_alternate, route_group: x.route_group || 'main', source_image: i + 1 })));
   });
   const seen = new Set();
-  return items.filter((x) => { const k = `${x.type}|${x.start}|${x.from}|${x.title}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  const out = items.filter((x) => { const k = `${x.type}|${x.start}|${x.from}|${x.title}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  out.title = texts.map((t) => parseAny(t).title).find(Boolean) || '';
+  return out;
 }
 // ===== 文字を貼り付けて取り込む =====
 // 予約メール・乗換案内の結果・メモなど、形式がバラバラでも自動で見分ける
-export function openPaste({ alternate = false, targetId = null } = {}) {
+export function openPaste({ alternate = false, targetId = null, initialText = '' } = {}) {
   const s = store.data.settings;
   let mode = alternate ? 'alt' : 'main';
   let target = targetId;
@@ -193,7 +205,7 @@ export function openPaste({ alternate = false, targetId = null } = {}) {
     build(body, close) {
       body.innerHTML = `
         <div class="field-label">取り込む文字</div>
-        <textarea id="ps-text" class="field" rows="9" placeholder="ここに貼り付け&#10;&#10;例）予約完了メール、乗換案内の結果、&#10;「10/12 9:30 伏見稲荷」のようなメモ&#10;何件まとめて貼ってもOK"></textarea>
+        <textarea id="ps-text" class="field" rows="9" placeholder="ここに貼り付け&#10;&#10;例）予約完了メール、乗換案内の結果、旅程表、&#10;「10/12 9:30 伏見稲荷」のようなメモ&#10;何件まとめて貼ってもOK">${esc(initialText)}</textarea>
         <div class="hstack" style="margin-top:8px"><button class="btn small secondary" id="ps-clip">${I.copy}クリップボードから貼り付け</button><button class="btn small secondary" id="ps-clear">消す</button></div>
         <div class="field-label">取り込み方</div>
         <div class="segment" id="ps-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
@@ -247,36 +259,41 @@ export function openImport({ alternate = false, targetId = null }) {
   let useAI = !!s.apiKey;
   let hint = '';
   let onPaste = null;
-  const addFiles = (list) => { for (const f of list) if (f && /^image\//.test(f.type || 'image/')) files.push({ file: f, url: URL.createObjectURL(f) }); };
+  const addFiles = (list) => { for (const f of list) if (f && (isPdf(f) || /^image\//.test(f.type || 'image/'))) files.push({ file: f, url: isPdf(f) ? '' : URL.createObjectURL(f), pdf: isPdf(f), name: f.name }); };
   sheet({
-    title: alternate ? '予備ルートを取り込む' : 'スクショから取り込む', left: 'キャンセル',
+    title: alternate ? '予備ルートを取り込む' : '写真・PDFから取り込む', left: 'キャンセル',
     onClose: () => { document.removeEventListener('paste', onPaste); },
     build(body, close) {
       const draw = () => {
         const trip = currentTrip();
         const moves = trip ? events(trip).filter((e) => e.kind !== 'out') : [];
         body.innerHTML = `
-          <label class="drop" id="imp-drop">${I.photo}<div style="margin-top:6px;font-weight:600;color:var(--label)">スクリーンショット・写真を選ぶ</div><div class="small">複数まとめて選べます（乗換案内・ホテル・飛行機・バスの予約画面、紙のきっぷなど）<br>縦に長いスクショもそのまま読めます</div>
-            <input type="file" accept="image/*" multiple hidden id="imp-file"></label>
-          <div class="hstack" style="margin-top:8px"><button class="btn small secondary" id="imp-clip">${I.copy}コピーした画像を貼り付け</button></div>
+          <div class="drop-pair">
+            <label class="drop" id="imp-drop"><span class="drop-ico">${I.photo}</span><span class="drop-title">写真・スクショ</span><span class="drop-sub">予約画面・乗換案内など<br>複数まとめてOK</span>
+              <input type="file" accept="image/*" multiple hidden id="imp-file"></label>
+            <label class="drop pdf"><span class="drop-ico">${I.note}</span><span class="drop-title">PDFファイル</span><span class="drop-sub">旅程表・予約確認の PDF<br>いちばん正確に読めます</span>
+              <input type="file" accept="application/pdf,.pdf" multiple hidden id="imp-pdf"></label>
+          </div>
+          <button class="btn small secondary" id="imp-clip" style="margin-top:10px;width:100%">${I.copy}コピーした画像を貼り付け</button>
           <div class="thumbs" id="imp-th"></div>
           <div class="section-title">取り込み方</div>
           <div class="segment" id="imp-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
           ${mode === 'alt' && moves.length ? `<div class="list"><div class="row"><div style="flex:none">どの予定の予備？</div><select id="imp-target"><option value="">自動で判断</option>${moves.map((e) => `<option value="${e.it.id}" ${target === e.it.id ? 'selected' : ''}>${e.at ? hm(e.at) : ''} ${esc(e.it.title || '')} ${esc(e.it.from || '')}→${esc(e.it.to || '')}</option>`).join('')}</select></div></div>` : ''}
           <div class="list" style="margin-top:12px"><div class="row"><div style="flex:none">補足</div><input type="text" id="imp-hint" class="left" placeholder="例：10月3日の出発です（任意）" value="${esc(hint)}"></div>
           ${s.apiKey ? `<div class="row"><div class="grow">AI（Claude）で読む<div class="sub">オフにすると端末の中だけで読み取ります（無料）</div></div><label class="switch"><input type="checkbox" id="imp-ai" ${useAI ? 'checked' : ''}><span></span></label></div>` : ''}</div>
-          <div class="section-foot">${useAI && s.apiKey ? `${I.sparkles} AI（Claude）で読み取ります。画像は読み取りのために Anthropic に送られます。` : `端末の中で文字を読み取ります（読み取り後に直せます）。白黒にして文字をくっきりさせ、ダークモードの画面も読めるようにしています。${s.apiKey ? '' : '「設定」で Claude の API キーを入れると、ずっと正確に読み取れます。'}<br>💡 いちばん確実なのは、iPhoneの「写真」でテキスト認識 →「すべてをコピー」→「文字から取り込む」です。`}</div>
-          <div style="margin-top:16px"><button class="btn" id="imp-go" ${files.length ? '' : 'disabled'}>${I.sparkles}${files.length ? `${files.length}枚を読み取る` : '画像を選んでください'}</button></div>
+          <div class="section-foot">${useAI && s.apiKey ? `${I.sparkles} AI（Claude）で読み取ります。画像は読み取りのために Anthropic に送られます。` : `端末の中で読み取ります（無料・読み取り後に直せます）。<b>PDF</b>は文字がそのまま入っているので、いちばん正確です。写真の文字読み取りは、色付きの表や小さい字で間違えることがあります。${s.apiKey ? '' : '「設定」で API キーを入れると、写真もずっと正確に読めます。'}`}</div>
+          <div style="margin-top:16px"><button class="btn" id="imp-go" ${files.length ? '' : 'disabled'}>${I.sparkles}${files.length ? `${files.length}件を読み取る` : '写真かPDFを選んでください'}</button></div>
           <div id="imp-prog" style="margin-top:14px"></div>`;
         const th = $('#imp-th', body);
         files.forEach((f, i) => {
           const d = document.createElement('div');
           d.className = 'th';
-          d.innerHTML = `<img src="${f.url}"><button data-rm="${i}">×</button>`;
+          d.innerHTML = f.pdf ? `<div class="th-pdf">${I.note}<b>PDF</b><span>${esc(f.name || '')}</span></div><button data-rm="${i}" aria-label="外す">×</button>` : `<img src="${f.url}" alt=""><button data-rm="${i}" aria-label="外す">×</button>`;
           th.append(d);
         });
-        $$('[data-rm]', body).forEach((b) => b.onclick = (e) => { e.preventDefault(); URL.revokeObjectURL(files[+b.dataset.rm].url); files.splice(+b.dataset.rm, 1); draw(); });
+        $$('[data-rm]', body).forEach((b) => b.onclick = (e) => { e.preventDefault(); if (files[+b.dataset.rm].url) URL.revokeObjectURL(files[+b.dataset.rm].url); files.splice(+b.dataset.rm, 1); haptic(); draw(); });
         $('#imp-file', body).onchange = (e) => { addFiles(e.target.files); draw(); };
+        $('#imp-pdf', body).onchange = (e) => { addFiles(e.target.files); draw(); };
         const drop = $('#imp-drop', body);
         drop.ondragover = (e) => { e.preventDefault(); };
         drop.ondrop = (e) => { e.preventDefault(); addFiles(e.dataTransfer?.files || []); draw(); };
@@ -309,24 +326,39 @@ async function run(body, close, files, mode, target, hint, useAI) {
   let ocrText = '';
   try {
     let result, views;
+    // PDF は先に文字を取り出す（文字の入っていない PDF はページを画像にする）
+    const pdfTexts = [], pdfImages = [];
+    views = [];
+    for (let i = 0; i < files.length; i++) {
+      if (!files[i].pdf) continue;
+      say(`PDFを読んでいます… ${files[i].name || ''}`, 0.05);
+      const res = await readPdf(files[i].file, (p) => say('PDFを読んでいます…', 0.05 + p * 0.25));
+      if (res.scanned) pdfImages.push(...res.images); else pdfTexts.push(res.text);
+      files[i].thumbs = await pdfThumb(files[i].file);
+    }
+    const images = [...files.filter((f) => !f.pdf).map((f) => f.file), ...pdfImages];
+    for (const f of files) { if (f.pdf) views.push(f.thumbs?.[0] || null); }
     if (useAI) {
-      say('画像を準備しています…', 0.05);
-      const prep = await prepareImages(files.map((f) => f.file), (p) => say('画像を準備しています…', 0.05 + p * 0.2));
-      views = prep.views;
-      say('AIが読み取っています…（10〜60秒ほど）', 0.3);
-      result = await askClaude(prep.content, hint, mode === 'alt');
+      say('画像を準備しています…', 0.3);
+      const prep = images.length ? await prepareImages(images, (p) => say('画像を準備しています…', 0.3 + p * 0.2)) : { content: [], views: [] };
+      views = [...prep.views, ...views];
+      say('AIが読み取っています…（10〜60秒ほど）', 0.5);
+      const content = [...prep.content, ...pdfTexts.map((t, k) => ({ type: 'text', text: `PDF${k + 1}の文字:\n${t}` }))];
+      result = await askClaude(content, hint, mode === 'alt');
     } else {
-      const texts = [];
-      views = [];
-      for (let i = 0; i < files.length; i++) {
-        const label = `文字を読み取っています… ${i + 1}/${files.length}`;
-        say(label, i / files.length);
-        views.push((await prepForAI(files[i].file, { maxSide: 1568 })).view);
-        texts.push(await ocr(files[i].file, (p, kind) => say(kind === 'load' ? '文字読み取りの準備をしています…（初回だけ少し時間がかかります）' : label, (i + p) / files.length)));
+      const texts = [...pdfTexts];
+      const imgViews = [];
+      for (let i = 0; i < images.length; i++) {
+        const label = `文字を読み取っています… ${i + 1}/${images.length}`;
+        say(label, 0.3 + (i / images.length) * 0.7);
+        imgViews.push((await prepForAI(images[i], { maxSide: 1568 })).view);
+        texts.push(await ocr(images[i], (p, kind) => say(kind === 'load' ? '文字読み取りの準備をしています…（初回だけ少し時間がかかります）' : label, 0.3 + ((i + p) / images.length) * 0.7)));
       }
+      views = [...views, ...imgViews];
       ocrText = texts.join('\n\n');
       const hinted = hint ? texts.map((t, i) => (i === 0 ? `${hint}\n${t}` : t)) : texts;
-      result = { trip_name: '', items: itemsFromOcrTexts(hinted) };
+      const its = itemsFromOcrTexts(hinted);
+      result = { trip_name: its.title || '', items: its };
     }
     const raw = result.items || [];
     if (!raw.length) {
@@ -348,7 +380,7 @@ async function run(body, close, files, mode, target, hint, useAI) {
       return it;
     });
     close();
-    setTimeout(() => review(items, result.trip_name, target, { rawText: ocrText, alternate: mode === 'alt' }), 300);
+    setTimeout(() => review(items, result.trip_name, target, { rawText: ocrText, alternate: mode === 'alt' }), 350);
   } catch (e) {
     console.error(e);
     const msg = friendlyError(e);
@@ -359,12 +391,13 @@ async function run(body, close, files, mode, target, hint, useAI) {
 }
 
 // 読み取り結果の確認
-export function review(items, tripName, target) {
+export function review(items, tripName, target, { rawText = '', alternate = false } = {}) {
   const cur = currentTrip();
   // 旅の名前が読めた・今の旅が空でない時は、新しい旅として追加するのを初めの選択にする
   let dest = target || (cur && !cur.items.length) ? 'cur' : tripName || !cur ? 'new' : 'cur';
   items.sort((a, b) => (a.start || '9').localeCompare(b.start || '9'));
   const sel = new Set(items.map((i) => i.id));
+  let closeSheet = () => {};
   sheet({
     title: '読み取り結果', right: '旅程に追加',
     onRight: () => {
@@ -399,10 +432,12 @@ export function review(items, tripName, target) {
       toast(`${added}件の予定${altN ? `と${altN}件の予備ルート` : ''}を追加しました`, 3000);
       document.querySelector('#tabbar [data-tab="trip"]')?.click();
     },
-    build(body) {
+    build(body, close) {
+      closeSheet = close;
       const draw = () => {
         body.innerHTML = `${cur ? `<div class="field-label" style="margin-top:4px">追加する先</div><div class="segment" id="rv-dest"><button data-v="new" class="${dest === 'new' ? 'active' : ''}">新しい旅として</button><button data-v="cur" class="${dest === 'cur' ? 'active' : ''}">表示中の旅に追加</button></div>` : ''}
-          <div class="section-foot" style="margin:0 4px 10px">${dest === 'new' && tripName ? `旅の名前：${esc(tripName)}<br>` : ''}${items.length}件見つかりました。タップで直せます。追加しないものはチェックを外してください。</div>
+          <div class="section-foot" style="margin:0 4px 10px">${dest === 'new' && tripName ? `旅の名前：<b>${esc(tripName)}</b><br>` : ''}${items.length}件見つかりました（予備ルート ${items.filter((i) => i._alt).length}件）。タップで直せます。追加しないものはチェックを外してください。</div>
+          ${rawText ? `<button class="btn small secondary" id="rv-raw" style="width:100%;margin-bottom:12px">${I.edit}読み取った文字を見て直す</button>` : ''}
           ${items.map((it) => { const T = TYPES[it.type] || TYPES.other; const s = parseLocal(it.start), e = parseLocal(it.end); return `
           <div class="ev" style="--c:${T.color};margin-bottom:10px" data-id="${it.id}">
             <div class="top"><button class="check ${sel.has(it.id) ? 'on' : ''}" data-chk>${sel.has(it.id) ? I.check : ''}</button><div class="type-ico">${I[T.icon]}</div><div class="title">${esc(it.title || T.name)}</div>${it._alt ? '<span class="badge ng">予備</span>' : ''}${it.reserved ? '<span class="badge ok">予約済み</span>' : ''}</div>
@@ -410,6 +445,7 @@ export function review(items, tripName, target) {
             <button class="link-btn small" data-edit>${I.edit} 直す</button>
           </div>`; }).join('')}`;
         if ($('#rv-dest', body)) segment($('#rv-dest', body), (v) => { dest = v; });
+        $('#rv-raw', body)?.addEventListener('click', () => { closeSheet(); setTimeout(() => openPaste({ alternate, targetId: target, initialText: rawText }), 350); });
         $$('[data-chk]', body).forEach((b) => b.onclick = () => { const id = b.closest('[data-id]').dataset.id; sel.has(id) ? sel.delete(id) : sel.add(id); haptic(); draw(); });
         $$('[data-edit]', body).forEach((b) => b.onclick = () => {
           const it = items.find((x) => x.id === b.closest('[data-id]').dataset.id);

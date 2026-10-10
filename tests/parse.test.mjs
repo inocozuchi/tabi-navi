@@ -166,5 +166,66 @@ check('1行ずつの旅程表', parseAny(`大阪日帰り 11/3
   { type: 'train', from: '京都', to: '大阪', start: '2026-11-03T15:30', end: '2026-11-03T16:00' },
 ]);
 
+{
+  const r = parseAny(fs.readFileSync(new URL('./samples/gifu-livetext.txt', import.meta.url), 'utf8'), today);
+  const main = r.filter((x) => !x.is_alternate);
+  const alts = r.filter((x) => x.is_alternate);
+  check('旅程表（岐阜・表を写真から文字コピー）本命', main, [
+    { type: 'bus', title: '濃飛バス', from: 'バスタ新宿', to: '平湯バスターミナル', start: '2026-11-13T08:15', end: '2026-11-13T12:55' },
+    { type: 'activity', title: '荷物を平田館へ預ける', start: '2026-11-13T13:00' },
+    { type: 'meal', title: '昼食', start: '2026-11-13T13:15', end: '2026-11-13T14:00' },
+    { type: 'activity', title: 'ひらゆの森', start: '2026-11-13T14:00', end: '2026-11-13T15:30', cost: '¥700' },
+    { type: 'activity', title: '2日間きっぷ', start: '2026-11-13T15:30', end: '2026-11-13T16:30' },
+    { type: 'hotel', title: '平田館', start: '2026-11-13T17:00' },
+    { type: 'meal', title: '夕食・温泉', start: '2026-11-13T18:00' },
+    { type: 'meal', title: '朝食', start: '2026-11-14T07:00' },
+    { type: 'walk', to: '平湯バスターミナル', start: '2026-11-14T07:45' },
+    { type: 'bus', from: '平湯', to: '新穂高', start: '2026-11-14T08:00', end: '2026-11-14T08:45' },
+    { type: 'ropeway', title: 'ロープウェイ', to: '西穂高口', start: '2026-11-14T09:00', end: '2026-11-14T09:25' },
+    { type: 'activity', title: '展望台', start: '2026-11-14T09:25', end: '2026-11-14T10:10' },
+    { type: 'ropeway', to: '新穂高温泉駅', start: '2026-11-14T10:15', end: '2026-11-14T10:40' },
+    { type: 'bus', to: '平湯', start: '2026-11-14T10:55', end: '2026-11-14T11:28' },
+    { type: 'activity', title: '荷物を受け取り', start: '2026-11-14T11:30' },
+    { type: 'meal', title: '昼食', start: '2026-11-14T11:35', end: '2026-11-14T12:20' },
+    { type: 'bus', from: '平湯BT', to: '高山濃飛バスセンター', start: '2026-11-14T12:30', end: '2026-11-14T13:31' },
+    { type: 'bus', title: 'さるぼぼバス', to: '飛騨の里', start: '2026-11-14T13:45', end: '2026-11-14T13:54' },
+    { type: 'activity', title: '飛騨の里', start: '2026-11-14T13:55', end: '2026-11-14T15:50' },
+    { type: 'bus', to: 'バスセンター', start: '2026-11-14T15:54', end: '2026-11-14T16:10' },
+    { type: 'train', title: '特急ひだ18号', from: '高山', to: '下呂', start: '2026-11-14T16:33', end: '2026-11-14T17:21' },
+    { type: 'walk', to: '大江戸温泉物語 下呂別館', start: '2026-11-14T17:25', end: '2026-11-14T17:40' },
+    { type: 'hotel', title: '大江戸温泉物語 下呂別館', start: '2026-11-14T17:40', end: '2026-11-15T08:50' },
+    { type: 'meal', title: '夕食・大浴場', start: '2026-11-14T20:00' },
+    { type: 'meal', title: '朝食', start: '2026-11-15T07:00', end: '2026-11-15T08:15' },
+    { type: 'activity', title: 'クアガーデン', start: '2026-11-15T09:30', end: '2026-11-15T10:30' },
+    { type: 'walk', to: '水明館', start: '2026-11-15T10:35', end: '2026-11-15T10:50' },
+    { type: 'activity', title: '水明館', start: '2026-11-15T11:00', end: '2026-11-15T12:00', notes: '小川屋' },
+    { type: 'meal', title: '昼食', start: '2026-11-15T12:00', end: '2026-11-15T12:45' },
+    { type: 'walk', to: '下呂駅', start: '2026-11-15T12:55' },
+    { type: 'train', title: '特急ひだ10号', from: '下呂', to: '名古屋', start: '2026-11-15T13:21', end: '2026-11-15T15:04' },
+    { type: 'shinkansen', title: 'ひかり654号', from: '名古屋', to: '東京', start: '2026-11-15T15:25', end: '2026-11-15T17:09', cost: '¥11,090' },
+  ]);
+  check('旅程表（岐阜）予備ルート', alts, [
+    { type: 'train', title: 'ひだ20号', from: '高山', to: '下呂', start: '2026-11-14T18:48', end: '2026-11-14T19:29' },
+    { type: 'shinkansen', title: 'こだま', from: '名古屋', to: '東京', start: '2026-11-15T15:38', end: '2026-11-15T18:18' },
+    { type: 'shinkansen', title: 'ひかり658号', from: '名古屋', to: '東京', start: '2026-11-15T17:25', end: '2026-11-15T19:09' },
+    { type: 'shinkansen', title: 'ひかり662号', from: '名古屋', start: '2026-11-15T19:31' },
+  ]);
+  if (r.title !== '岐阜2泊3日') { fail++; console.log('FAIL 旅の名前', r.title); } else pass++;
+}
+
+check('分類が行の終わりにある旅程表', parseAny(`DAY 1 11/13(金)
+8:15 バスタ新宿 発（濃飛バス） 移動
+12:55 平湯バスターミナル 着 移動
+13:15–14:00 昼食 食事
+17:00 平田館 チェックイン 宿
+DAY 2 11/14(土)
+8:00 → 8:45 バスで新穂高ロープウェイへ 移動
+平湯発 → 新穂高（H03）`, today), [
+  { type: 'bus', from: 'バスタ新宿', to: '平湯バスターミナル', start: '2026-11-13T08:15', end: '2026-11-13T12:55' },
+  { type: 'meal', title: '昼食', start: '2026-11-13T13:15', end: '2026-11-13T14:00' },
+  { type: 'hotel', title: '平田館', start: '2026-11-13T17:00', end: '2026-11-14T07:30' },
+  { type: 'bus', from: '平湯', to: '新穂高', start: '2026-11-14T08:00', end: '2026-11-14T08:45' },
+]);
+
 console.log(`\n${pass} PASS / ${fail} FAIL`);
 process.exit(fail ? 1 : 0);

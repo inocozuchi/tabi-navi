@@ -127,32 +127,43 @@ export async function prepForOCR(file) {
   } finally { im.done(); }
 }
 
-// 白黒にする → 暗い背景なら反転 → 明るさの幅を引き伸ばす
+// 白黒にする。場所ごとに背景の明るさを見て、暗い所（色付きの表のます・ダークモード）は反転してから、
+// まわりより暗い所を文字（黒）、それ以外を白にする（色付きの表でも白い字が読めるように）
 function enhance(g, w, h) {
   const id = g.getImageData(0, 0, w, h);
   const d = id.data;
   const n = w * h;
-  const L = new Uint8ClampedArray(n);
-  const hist = new Uint32Array(256);
-  for (let i = 0, p = 0; p < n; i += 4, p++) {
-    const l = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) | 0;
-    L[p] = l; hist[l]++;
+  const L = new Float32Array(n);
+  for (let i = 0, p = 0; p < n; i += 4, p++) L[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  // 積分画像で、まわりの平均の明るさをすばやく求める
+  const W1 = w + 1;
+  const S = new Float64Array(W1 * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) { row += L[y * w + x]; S[(y + 1) * W1 + x + 1] = S[y * W1 + x + 1] + row; }
   }
-  // 背景の明るさ＝いちばん多い明るさ。暗ければダークモードとみなして反転
-  let mode = 0;
-  for (let i = 1; i < 256; i++) if (hist[i] > hist[mode]) mode = i;
-  const invert = mode < 110;
-  // 1% と 99% の明るさを 0 と 255 に引き伸ばす
-  let lo = 0, hi = 255, acc = 0;
-  for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc > n * 0.01) { lo = i; break; } }
-  acc = 0;
-  for (let i = 255; i >= 0; i--) { acc += hist[i]; if (acc > n * 0.01) { hi = i; break; } }
-  if (hi - lo < 40) { lo = 0; hi = 255; }
-  const k = 255 / (hi - lo);
-  for (let i = 0, p = 0; p < n; i += 4, p++) {
-    let v = (L[p] - lo) * k;
-    if (invert) v = 255 - v;
-    d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+  const r = Math.max(12, Math.round(Math.min(w, h) / 60));
+  const mean = (x, y) => {
+    const x0 = Math.max(0, x - r), y0 = Math.max(0, y - r), x1 = Math.min(w, x + r + 1), y1 = Math.min(h, y + r + 1);
+    return (S[y1 * W1 + x1] - S[y0 * W1 + x1] - S[y1 * W1 + x0] + S[y0 * W1 + x0]) / ((x1 - x0) * (y1 - y0));
+  };
+  // 背景の明るさは、もっと広い範囲の平均で決める（文字だけの所で反転しないように）
+  const R = r * 3;
+  const meanWide = (x, y) => {
+    const x0 = Math.max(0, x - R), y0 = Math.max(0, y - R), x1 = Math.min(w, x + R + 1), y1 = Math.min(h, y + R + 1);
+    return (S[y1 * W1 + x1] - S[y0 * W1 + x1] - S[y1 * W1 + x0] + S[y0 * W1 + x0]) / ((x1 - x0) * (y1 - y0));
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const dark = meanWide(x, y) < 135;
+      let v = L[p], m = mean(x, y);
+      if (dark) { v = 255 - v; m = 255 - m; }
+      // まわりより十分暗ければ文字
+      const out = v < m - 18 || v < 70 ? 0 : 255;
+      const i = p * 4;
+      d[i] = d[i + 1] = d[i + 2] = out; d[i + 3] = 255;
+    }
   }
   g.putImageData(id, 0, 0);
 }

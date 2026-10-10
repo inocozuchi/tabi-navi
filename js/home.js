@@ -47,7 +47,7 @@ export async function drawWeather(force) {
       return `<div>${i === 0 ? '今' : hh + '時'}<b>${wmo(wx.hourly.weather_code[k], !wx.hourly.is_day[k])[0]}</b>${Math.round(wx.hourly.temperature_2m[k])}°${wx.hourly.precipitation_probability[k] >= 30 ? `<i>☔${wx.hourly.precipitation_probability[k]}%</i>` : ''}</div>`;
     }).join('');
   } catch {
-    const w = $('#h-wx'); if (w) w.innerHTML = '<span class="wx-meta">天気を取得できません<br>タップで場所を選ぶ</span>';
+    const w = $('#h-wx'); if (w) w.innerHTML = '<span class="wx-meta">天気：場所を選ぶ ›</span>';
   }
 }
 
@@ -58,7 +58,7 @@ export function statusHTML() {
   const nx = nextAny();
   const alarmLine = nx
     ? `<button class="status-alarm" data-act="goalarm">${I.alarm}<span>${new Date(nx.at).getDate() !== now.getDate() ? '明日 ' : ''}${hm(new Date(nx.at))} ${esc(nx.alarm?.label || 'アラーム')}</span><span class="muted">あと${dur(nx.at - now)}</span><span class="chev">${I.chev}</span></button>`
-    : `<button class="status-alarm" data-act="alarmfor">${I.alarm}<span>アラームなし</span><span class="link">次の出発に合わせて設定</span><span class="chev">${I.chev}</span></button>`;
+    : `<button class="status-alarm" data-act="alarmfor">${I.alarm}<span>アラームなし</span><span class="link">自動で設定</span><span class="chev">${I.chev}</span></button>`;
   if (!t) return '';
   const evs = events(t).filter((e) => e.at);
   if (!evs.length) return `<div class="card status">${alarmLine}</div>`;

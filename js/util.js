@@ -218,6 +218,7 @@ export const I = {
   shinkansen: '<svg viewBox="0 0 24 24"><path d="M3 15c0-5 4-9 10-9h5a3 3 0 0 1 3 3v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM13 6v5h8M3 20h18"/></svg>',
   subway: '<svg viewBox="0 0 24 24"><circle cx="12" cy="11" r="8"/><path d="M8 15V8l4 5 4-5v7M8 21l1.5-2.5M16 21l-1.5-2.5"/></svg>',
   bus: '<svg viewBox="0 0 24 24"><path d="M6 3h12a2 2 0 0 1 2 2v12H4V5a2 2 0 0 1 2-2zM4 11h16M7 17v3M17 17v3M7.5 14h.01M16.5 14h.01"/></svg>',
+  gondola: '<svg viewBox="0 0 24 24"><path d="M3 4l18 3M12 5.5V9M6 9h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zM4 14h16M9 9v5M15 9v5"/></svg>',
   plane: '<svg viewBox="0 0 24 24"><path d="M21 15.5v-2l-8-5V4a1.5 1.5 0 0 0-3 0v4.5l-8 5v2l8-2.5V18l-2 1.5V21l3.5-1 3.5 1v-1.5L13 18v-5z"/></svg>',
   ship: '<svg viewBox="0 0 24 24"><path d="M3 17l2 3h14l2-3-9-3zM6 15V9h12v6M9 9V5h6v4M2 21c2 0 2-1 4-1s2 1 4 1 2-1 4-1 2 1 4 1 2-1 4-1"/></svg>',
   car: '<svg viewBox="0 0 24 24"><path d="M5 17h14v-5l-2-5H7l-2 5zM5 12h14M7 17v2M17 17v2M8 14.5h.01M16 14.5h.01"/></svg>',
@@ -271,6 +272,7 @@ export const TYPES = {
   bus: { name: 'バス', color: '#FF9500', icon: 'bus' },
   flight: { name: '飛行機', color: '#5856D6', icon: 'plane' },
   ferry: { name: '船', color: '#32ADE6', icon: 'ship' },
+  ropeway: { name: 'ロープウェイ', color: '#30B0C7', icon: 'gondola' },
   taxi: { name: 'タクシー・車', color: '#E0A800', icon: 'car' },
   walk: { name: '徒歩', color: '#8E8E93', icon: 'walk' },
   hotel: { name: '宿泊', color: '#AF52DE', icon: 'bed' },
@@ -278,7 +280,10 @@ export const TYPES = {
   meal: { name: '食事', color: '#A2845E', icon: 'food' },
   other: { name: 'その他', color: '#636366', icon: 'dots' },
 };
-export const TRANSPORT = new Set(['shinkansen', 'train', 'subway', 'bus', 'flight', 'ferry', 'taxi', 'walk']);
+export const TRANSPORT = new Set(['shinkansen', 'train', 'subway', 'bus', 'flight', 'ferry', 'ropeway', 'taxi', 'walk']);
+// 予約が要る（予約チェックを出す）予定か：新幹線・飛行機・船・宿、特急や高速バスなど
+export const needsResv = (it) => !!it && (it.reserved || ['shinkansen', 'flight', 'ferry', 'hotel'].includes(it.type)
+  || (['train', 'bus'].includes(it.type) && /号|特急|高速|夜行|ライナー|指定|予約/.test(`${it.title || ''} ${it.number || ''} ${it.notes || ''}`)));
 
 export function fileToDataURL(file) {
   return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
