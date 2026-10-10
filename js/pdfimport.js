@@ -92,3 +92,26 @@ export async function pdfThumb(file, maxSide = 1400) {
     return out;
   } catch { return []; }
 }
+
+// PDF を見るために、ページを画像にする（onPage(番号, 画像のURL, 全ページ数) が1ページずつ呼ばれる）
+export async function renderPdf(blob, width, onPage) {
+  const lib = await pdfjs();
+  const doc = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), cMapUrl: DIR + 'cmaps/', cMapPacked: true, isEvalSupported: false }).promise;
+  const n = Math.min(doc.numPages, 60);
+  try {
+    for (let i = 1; i <= n; i++) {
+      const pg = await doc.getPage(i);
+      const vp0 = pg.getViewport({ scale: 1 });
+      const v = pg.getViewport({ scale: Math.min(4, (width * Math.min(3, window.devicePixelRatio || 2) * 1.5) / vp0.width) });
+      const c = document.createElement('canvas');
+      c.width = Math.round(v.width); c.height = Math.round(v.height);
+      await pg.render({ canvasContext: c.getContext('2d'), viewport: v }).promise;
+      const b = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.9));
+      onPage?.(i, URL.createObjectURL(b), doc.numPages);
+    }
+  } finally { try { doc.destroy(); } catch {} }
+  return n;
+}
+export async function pdfPageCount(blob) {
+  try { const lib = await pdfjs(); const d = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), isEvalSupported: false }).promise; const n = d.numPages; d.destroy(); return n; } catch { return 0; }
+}

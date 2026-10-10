@@ -6,6 +6,7 @@ import { transitLinks, mapsSearchUrl, spotSearch } from './transit.js';
 import { icsDownload } from './tools.js';
 import { detectGaps, suggestSpotsForGap, autoOptimizeSchedule, getRecommendedTransferTime } from './planner.js';
 import { openShiori } from './shiori.js';
+import { openDocs, viewDoc, docsStripHTML, fillDocThumbs, removeTripDocs } from './docs.js';
 
 const el = () => $('#view-trip');
 let filter = 'all';
@@ -101,9 +102,9 @@ export function renderTrip() {
     <div class="trip-card" data-act="trips" role="button" tabindex="0">
       <div class="tc-top">
         <div class="tc-name-wrap"><div class="tc-eyebrow">表示中の旅${d.trips.length > 1 ? `・全${d.trips.length}件` : ''}</div><div class="tc-name">${esc(t.name || '旅')}<span class="tc-chev">${I.chev}</span></div></div>
-        <button class="tc-new" data-act="newtrip" aria-label="新しい旅をつくる">${I.plus}<span>新しい旅</span></button>
+        <button class="icon-btn" data-act="menu" aria-label="この旅のメニュー">${I.dots}</button>
       </div>
-      <div class="tc-meta">${firstAt ? `${mdw(firstAt)}${lastAt && dayKey(lastAt) !== dayKey(firstAt) ? ` 〜 ${mdw(lastAt)}` : ''}・${nDays}日間` : ts ? `${mdw(ts)}${te && +te !== +ts ? ` 〜 ${mdw(te)}` : ''}` : '日付はまだありません'}</div>
+      <div class="tc-meta">${ts ? `${mdw(ts)}${te && +te !== +ts ? ` 〜 ${mdw(te)}・${Math.round((te - ts) / 864e5) + 1}日間` : ''}` : firstAt ? `${mdw(firstAt)}${lastAt && dayKey(lastAt) !== dayKey(firstAt) ? ` 〜 ${mdw(lastAt)}` : ''}・${nDays}日間` : '日付はまだありません'}<span class="tc-hint">タップで旅を切り替え</span></div>
       <div class="tc-stats">
         <div><b>${items.length}</b><span>予定</span></div>
         <div><b style="color:${!resvItems.length ? 'var(--label3)' : resv === resvItems.length ? 'var(--green)' : 'var(--orange)'}">${resvItems.length ? `${resv}/${resvItems.length}` : '—'}</b><span>予約済み</span></div>
@@ -111,6 +112,7 @@ export function renderTrip() {
       </div>
     </div>
     ${buildTiles(false)}
+    ${docsStripHTML(t)}
     <div class="section-head">
       <h2>スケジュール</h2>
       <div class="actions"><button class="text-btn" data-act="addmenu">${I.plus}予定を追加</button></div>
@@ -186,6 +188,7 @@ export function renderTrip() {
   drawWeather();
   afterStatus();
   dayWeather(t);
+  fillDocThumbs(el(), t);
   updateNowJump();
 }
 
@@ -219,8 +222,22 @@ function updateNowJump() {
 // いちばん上：日付と大きな見出し（iOS の大きいタイトル）
 function titleHTML(hasTrip) {
   const n = new Date();
-  return `<header class="large-title home"><div><div class="eyebrow">${n.getMonth() + 1}月${n.getDate()}日 ${'日月火水木金土'[n.getDay()]}曜日</div><h1>旅程</h1></div>
-    <div class="actions">${hasTrip ? `<button class="icon-btn" data-act="menu" aria-label="旅のメニュー">${I.dots}</button>` : ''}<button class="icon-btn filled" data-act="${hasTrip ? 'addmenu' : 'newtrip'}" aria-label="${hasTrip ? '予定を追加' : '新しい旅をつくる'}">${I.plus}</button></div></header>`;
+  const t = hasTrip && currentTrip();
+  // 旅の状態（出発前・旅行中・終わった）を小さい札で出す
+  let chip = ['旅はまだありません', 'gray'];
+  if (t) {
+    const ev = events(t).filter((e) => e.at);
+    const a = ev[0]?.at || (t.start && parseLocal(t.start + 'T00:00'));
+    const z = ev[ev.length - 1]?.end || ev[ev.length - 1]?.at || (t.end && parseLocal(t.end + 'T23:59'));
+    if (a && n < a) chip = [`出発まで ${Math.max(1, Math.ceil((new Date(a.getFullYear(), a.getMonth(), a.getDate()) - new Date(n.getFullYear(), n.getMonth(), n.getDate())) / 864e5))}日`, 'blue'];
+    else if (a && (!z || n <= z)) chip = [`旅行中・${Math.floor((new Date(n.getFullYear(), n.getMonth(), n.getDate()) - new Date(a.getFullYear(), a.getMonth(), a.getDate())) / 864e5) + 1}日目`, 'green'];
+    else if (a) chip = ['旅は終わりました', 'gray'];
+    else chip = ['日程はまだ', 'gray'];
+  }
+  return `<div class="top-bar"><button class="tb-left" data-act="${t ? 'trips' : 'newtrip'}"><span class="tb-ico">${I.route}</span><span class="status-chip ${chip[1]}">${chip[0]}</span></button>
+      <button class="pill-btn" data-act="newtrip">${I.plus}新しい旅</button></div>
+    <header class="large-title home"><div><div class="eyebrow">${n.getMonth() + 1}月${n.getDate()}日 ${'日月火水木金土'[n.getDay()]}曜日</div><h1>旅程</h1></div>
+</header>`;
 }
 
 // 旅程をつくる・ふやす入口（はじめは大きいタイル、旅がある時は横に並ぶ小さいタイル）
@@ -229,6 +246,7 @@ const TILES = [
   ['paste', '文字を貼る', '予約メール・メモ', 'var(--blue)', 'copy'],
   ['add', '手入力', '1件ずつ追加', 'var(--green)', 'edit'],
   ['wish', '行きたい場所', 'リストから組み立て', 'var(--pink)', 'star'],
+  ['docs', '資料', '時刻表・チケット', 'var(--teal)', 'folder', false, true],
   ['optimize', '自動調整', '空き時間・乗換', 'var(--purple)', 'sparkles', false, true],
   ['pdf', 'しおり', '印刷・PDF', 'var(--orange)', 'note', false, true],
 ];
@@ -349,6 +367,8 @@ export function bindTrip() {
       case 'import': openImport({}); break;
       case 'trips': tripSwitcher(); break;
       case 'newtrip': newTrip(); break;
+      case 'docs': openDocs(); break;
+      case 'doc': if (trip) viewDoc(trip, (trip.docs || []).find((x) => x.id === t.dataset.doc), () => renderTrip()); break;
       case 'wish': (await import('./tools.js')).openWishlist(); break;
       case 'paste': openPaste({}); break;
       case 'add': editItem(null); break;
@@ -558,6 +578,7 @@ function tripMenu() {
       body.innerHTML = `<div class="list">
         <button class="row" data-k="rename">${I.edit}<div class="grow">名前を変える</div></button>
         <button class="row" data-k="new">${I.plus}<div class="grow">新しい旅をつくる</div></button>
+        <button class="row" data-k="docs">${I.folder}<div class="grow">旅の資料（時刻表・チケットの写真やPDF）</div></button>
         <button class="row" data-k="shiori">${I.note}<div class="grow">旅のしおりをつくる（印刷・PDF）</div></button>
         <button class="row" data-k="ics">${I.clock}<div class="grow">全部の予定をカレンダーに登録</div></button>
         <button class="row" data-k="social">${I.globe}<div class="grow">旅仲間と共有・チャット</div></button>
@@ -569,6 +590,7 @@ function tripMenu() {
       </div>`;
       $$('[data-k]', body).forEach((b) => b.onclick = async () => {
         const k = b.dataset.k;
+        if (k === 'docs') { close(); setTimeout(openDocs, 250); return; }
         if (k === 'shiori') { close(); (await import('./shiori.js')).openShiori(); return; }
         if (k === 'ics') { icsDownload(t.items, t.name); close(); return; }
         if (k === 'social') { close(); (await import('./social.js')).openSocial(); return; }
@@ -582,6 +604,7 @@ function tripMenu() {
         if (k === 'reset') { t.items.forEach((i) => (i.reserved = false)); store.save(); }
         if (k === 'del') {
           if (!(await confirmBox(`「${t.name}」を削除しますか？`, 'この操作は取り消せません', '削除', { destructive: true }))) return;
+          removeTripDocs(t);
           store.data.trips = store.data.trips.filter((x) => x.id !== t.id); store.data.currentTrip = null; store.save();
         }
         close(); renderTrip();

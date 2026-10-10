@@ -184,7 +184,7 @@ export function pushTrip(trip = currentTrip()) {
   if (!db || !S().room || trip?.groupId !== S().room) return;
   clearTimeout(pushT);
   pushT = setTimeout(() => {
-    const clean = JSON.parse(JSON.stringify(trip, (k, v) => (k === 'imgs' ? undefined : v)));
+    const clean = JSON.parse(JSON.stringify(trip, (k, v) => (k === 'imgs' || k === 'docs' ? undefined : v)));
     g().update({ trip: clean, tripAt: trip.updated || Date.now(), tripBy: me }).catch(() => {});
   }, 800);
 }
@@ -197,6 +197,8 @@ function pullTrip() {
   const imgs = Object.fromEntries((local?.items || []).map((i) => [i.id, i.imgs]));
   const remote = { ...grp.trip, groupId: grp.id, updated: grp.tripAt };
   remote.items = (remote.items || []).map((i) => ({ ...i, imgs: imgs[i.id] || [] }));
+  // 資料（写真・PDF）はこの端末だけのもの。届いた旅には今の資料を残す
+  remote.docs = local?.docs || [];
   if (local) Object.assign(local, remote);
   else { remote.id = remote.id || uid(); trips.push(remote); if (!store.data.currentTrip) store.data.currentTrip = remote.id; }
   store.save(true);

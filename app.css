@@ -733,3 +733,114 @@ button.row:active, label.row:active, .row.tappable:active { background: var(--fi
 .day-tabs.sticky { top: 34px; padding: 8px 16px; background: color-mix(in srgb, var(--bg) 86%, transparent); }
 .card.status.solo { padding: 0 16px; }
 .card.status.solo .status-alarm { margin-top: 0; border-top: 0; }
+
+/* ======================================================================
+   参考デザイン（レジアプリ）に合わせた見た目
+   ・行は1つずつ角の丸いカードに分け、アイコンは青い線のアイコン
+   ・見出しは太字、説明は灰色の小さい字
+   ・選ばれているタブは、薄い青の角丸で囲む
+   ====================================================================== */
+:root { --shadow: 0 2px 12px rgba(0,0,0,.055); --radius: 18px; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --shadow: none; } }
+:root[data-theme="dark"] { --shadow: none; }
+
+/* いちばん上の札とボタン */
+.top-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 2px auto 10px; min-height: 44px; }
+.tb-left { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.tb-ico { color: var(--blue); font-size: 26px; display: grid; place-items: center; }
+.tb-ico svg { stroke-width: 1.9; }
+.status-chip { display: inline-flex; align-items: center; height: 30px; padding: 0 12px; border-radius: 15px; font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status-chip.blue { background: var(--tint); color: var(--blue); }
+.status-chip.green { background: color-mix(in srgb, var(--green) 16%, transparent); color: color-mix(in srgb, var(--green) 80%, var(--label)); }
+.status-chip.gray { background: var(--fill); color: var(--label2); }
+.pill-btn { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 42px; padding: 0 18px 0 15px; border-radius: 21px; background: var(--blue); color: #fff; font-size: 15.5px; font-weight: 700; box-shadow: 0 6px 18px color-mix(in srgb, var(--blue) 35%, transparent); transition: transform .18s cubic-bezier(.3,1.5,.5,1); white-space: nowrap; }
+.pill-btn:active { transform: scale(.94); }
+.pill-btn svg { width: 18px; height: 18px; stroke-width: 2.6; }
+
+/* 見出し */
+.large-title { margin: 4px auto 14px; }
+.large-title h1 { font-size: 30px; font-weight: 800; }
+.large-title.home .eyebrow { display: none; }
+.section-title { font-size: 13.5px; font-weight: 700; color: var(--label2); text-transform: none; letter-spacing: 0; margin: 22px 4px 8px; }
+.section-head h2 { font-size: 20px; font-weight: 800; }
+
+/* 行：入力の無い一覧は、1行ずつのカードにする */
+.list:not(:has(input, select, textarea, .switch)) { background: transparent; box-shadow: none; overflow: visible; border-radius: 0; display: flex; flex-direction: column; gap: 10px; }
+.list:not(:has(input, select, textarea, .switch)) > .row { background: var(--bg2); border-radius: 16px; box-shadow: var(--shadow); padding: 14px 16px; min-height: 64px; gap: 14px; transition: transform .15s, background .15s; }
+.list:not(:has(input, select, textarea, .switch)) > .row::before { display: none; }
+.list:not(:has(input, select, textarea, .switch)) > button.row:active, .list:not(:has(input, select, textarea, .switch)) > label.row:active { transform: scale(.985); background: var(--bg2); }
+.list:not(:has(input, select, textarea, .switch)) > .row > .grow { font-weight: 700; font-size: 16.5px; }
+.list:not(:has(input, select, textarea, .switch)) > .row .sub { font-weight: 400; font-size: 13.5px; margin-top: 3px; line-height: 1.45; }
+.list .row.danger, .list .row.danger .ico { color: var(--red); }
+/* 入力のある一覧（フォーム）は、ひとまとまりのカード */
+.list { border-radius: 16px; }
+/* アイコン：色の四角ではなく、青い線のアイコン */
+.row .ico { background: none !important; color: var(--blue); width: 28px; height: 28px; font-size: 25px; border-radius: 0; }
+.row .ico svg { stroke-width: 1.8; }
+.row.icon-row + .row.icon-row::before { left: 58px; }
+
+/* カード */
+.card, .trip-card, .start-card, .empty-card, .tile, .ev, .day-tab, .rv-summary > div, .reader { box-shadow: var(--shadow); }
+.card { border-radius: var(--radius); }
+.ev { border-radius: 16px; }
+.trip-card, .start-card, .empty-card { border-radius: var(--radius); }
+.tc-switch { flex: none; display: inline-flex; align-items: center; gap: 2px; font-size: 14px; font-weight: 600; color: var(--blue); }
+.tc-switch svg { width: 15px; height: 15px; stroke-width: 2.4; }
+.tc-chev { display: none; }
+
+/* 下のタブ：選ばれているタブを薄い青の角丸で囲む */
+#tabbar { padding-left: 8px; padding-right: 8px; }
+#tabbar button { margin: 0 3px; padding: 6px 0 5px; border-radius: 16px; transition: color .2s, background .25s; gap: 3px; font-size: 11px; font-weight: 600; }
+#tabbar button svg { font-size: 25px; stroke-width: 1.7; }
+#tabbar button.active { background: var(--tint); }
+#tabbar button.active svg { transform: none; }
+#tabbar { align-items: flex-start; padding-top: 6px; }
+
+/* 資料 */
+.docs-head { margin: 4px 2px 14px; }
+.docs-head .eyebrow { font-size: 13px; font-weight: 700; color: var(--label2); }
+.docs-head h1 { margin: 0 0 6px; font-size: 30px; font-weight: 800; }
+.docs-head p { margin: 0; font-size: 14px; color: var(--label2); line-height: 1.55; }
+.drop-wide { display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: 16px; background: var(--bg2); box-shadow: var(--shadow); color: var(--blue); font-size: 26px; cursor: pointer; transition: transform .15s; margin-bottom: 14px; border: 1.5px dashed color-mix(in srgb, var(--blue) 40%, transparent); }
+.drop-wide:active { transform: scale(.98); }
+.drop-wide span { display: flex; flex-direction: column; gap: 2px; }
+.drop-wide b { font-size: 16.5px; color: var(--label); }
+.drop-wide small { font-size: 13px; color: var(--label2); }
+.doc-chips .chip .cnt { font-size: 12px; opacity: .6; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.chips.wrap { flex-wrap: wrap; }
+.chip svg { width: 15px; height: 15px; }
+.doc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.doc-card { text-align: left; background: var(--bg2); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; animation: fadeUp .35s calc(var(--i) * 35ms) both; transition: transform .15s; }
+.doc-card:active { transform: scale(.97); }
+.doc-th { position: relative; aspect-ratio: 4/5; background: var(--fill); overflow: hidden; }
+.doc-th img { width: 100%; height: 100%; object-fit: cover; object-position: top; opacity: 0; transition: opacity .3s; display: block; }
+.doc-th img.on { opacity: 1; }
+.doc-kind { position: absolute; left: 8px; top: 8px; z-index: 1; font-size: 11px; font-weight: 700; color: #fff; background: rgba(255,59,48,.92); padding: 2px 7px; border-radius: 6px; }
+.doc-name { padding: 9px 11px 0; font-size: 14.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.doc-meta { padding: 2px 11px 10px; font-size: 12px; color: var(--label2); }
+.doc-strip { display: flex; gap: 10px; overflow-x: auto; margin: 0 -16px 6px; padding: 2px 16px 8px; scrollbar-width: none; }
+.doc-strip::-webkit-scrollbar { display: none; }
+.doc-mini { position: relative; flex: none; width: 96px; text-align: left; transition: transform .15s; }
+.doc-mini:active { transform: scale(.95); }
+.doc-mini img { width: 96px; height: 120px; border-radius: 12px; object-fit: cover; object-position: top; background: var(--fill); display: block; box-shadow: var(--shadow); opacity: 0; transition: opacity .3s; }
+.doc-mini img.on { opacity: 1; }
+.doc-mini span { position: absolute; left: 6px; top: 6px; font-size: 10px; font-weight: 700; color: #fff; background: rgba(255,59,48,.92); padding: 1px 5px; border-radius: 5px; }
+.doc-mini b { display: block; margin-top: 5px; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.section-head.small { display: flex; align-items: center; justify-content: space-between; }
+.section-head.small .text-btn { font-size: 13.5px; }
+.nav-add { display: inline-grid; place-items: center; width: 36px; height: 36px; color: var(--blue); font-size: 24px; margin-right: 4px; }
+.nav-add svg { stroke-width: 2.2; }
+.page .page-head .right { display: flex; justify-content: flex-end; }
+.page-body.viewer-body { padding: 0 0 calc(var(--sab) + 8px); display: flex; flex-direction: column; background: #111; }
+.viewer { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
+.viewer-inner { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 8px 0; max-width: none !important; }
+.viewer-page { display: block; width: 100%; height: auto; background: #fff; }
+.viewer-loading { color: #ddd; text-align: center; padding: 40px 0; display: flex; gap: 8px; justify-content: center; align-items: center; }
+.viewer-hint { flex: none; text-align: center; font-size: 12px; color: rgba(255,255,255,.6); padding: 8px 0 0; display: flex; justify-content: center; gap: 5px; align-items: center; }
+.viewer-hint svg { width: 14px; height: 14px; }
+.page-body.viewer-body > * { max-width: none; }
+
+.doc-mini { width: 78px; }
+.doc-mini img { width: 78px; height: 98px; border-radius: 10px; }
+.trip-card .icon-btn { flex: none; }
+.tc-hint { display: block; font-size: 12px; color: var(--blue); margin-top: 2px; font-weight: 600; }

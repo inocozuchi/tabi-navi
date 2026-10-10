@@ -213,6 +213,7 @@ const TILES = [
   ['paste', '文字から取り込む', I.copy, 'var(--blue)', '予約メール・乗換結果・メモ'],
   ['import', '写真・PDFから取り込む', I.photo, 'var(--indigo)', '旅程表PDF・スクショ・予約画面'],
   ['wish', '行きたいリスト', I.star, 'var(--pink)', 'スポットをためて旅程に'],
+  ['docs', '旅の資料', I.folder, 'var(--teal)', '時刻表・チケットの写真やPDFを保存'],
   ['shiori', '旅のしおり', I.note, 'var(--teal)', '印刷・PDFで保存'],
   ['memo', 'メモ', I.edit, 'var(--orange)', '部屋番号・集合時間など'],
   ['budget', '旅費', I.wallet, 'var(--green)', '自動で合計・割り勘'],
@@ -237,7 +238,7 @@ const rowTile = ([k, n, ic, c, sub]) => `<button class="row icon-row" data-t="${
 export function bindTools() {
   $('#view-tools').addEventListener('click', (e) => {
     const t = e.target.closest('[data-t]')?.dataset.t;
-    const map = { paste: () => openPaste({}), import: () => openImport({}), wish: openWishlist, shiori: openShiori, memo: openMemos, budget: openBudget, pack: openPacking, fx: openCurrency, social: openSocial, sleep: openSleep };
+    const map = { paste: () => openPaste({}), import: () => openImport({}), wish: openWishlist, shiori: openShiori, docs: () => import('./docs.js').then((m) => m.openDocs()), memo: openMemos, budget: openBudget, pack: openPacking, fx: openCurrency, social: openSocial, sleep: openSleep };
     map[t]?.();
   });
 }
