@@ -352,9 +352,11 @@ export function parseAny(text, today = new Date()) {
     // 宿と飛行機は、メール全体を1件として読むことが多い
     const fl = parseFlights(part, today);
     const ho = parseHotel(part, today);
-    if (fl && ho) return [...fl, ...ho];
-    if (fl) return fl;
-    if (ho) return ho;
+    if (fl || ho) {
+      // 宿や飛行機のメールに、電車の経路も一緒に貼られていることがある
+      const rt = /発|着/.test(part) ? (parseRoute(part, today) || []).filter((r) => r.type !== 'flight' && r.from && r.to && !(fl || []).some((f) => f.start === r.start)) : [];
+      return [...(fl || []), ...(ho || []), ...rt];
+    }
     const bus = parseBus(part, today);
     if (bus) return bus;
     const ar = parseArrow(part, today);

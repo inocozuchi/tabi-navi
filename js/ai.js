@@ -3,7 +3,8 @@
 //  ・キーが無い時：端末の中で文字を読み取り（Tesseract.js）、簡単な規則で予定に分ける（精度は控えめ）
 import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, blobToBase64, blobs, pad, toLocalISO, segment, aiOn, aiName, aiCompany, aiProvider } from './util.js';
 import { currentTrip, ensureTrip, renderTrip, editItem, events } from './trip.js';
-import { parseAny, cleanOcrText, findDate, layoutLines } from './parse.js';
+import { parseAny, cleanOcrText, findDate, layoutLines, looksLikeSchedule } from './parse.js';
+import { mergeReadings, pickVersion, findExisting, overwrite, diffs, FIELDS } from './merge.js';
 import { readPdf, isPdf, pdfThumb } from './pdfimport.js';
 import { prepForAI, prepForOCR } from './imageprep.js';
 
@@ -283,7 +284,7 @@ export function openPaste({ alternate = false, targetId = null, initialText = ''
   const s = store.data.settings;
   let mode = alternate ? 'alt' : 'main';
   let target = targetId;
-  let useAI = aiOn();
+  let how = readModeOf();
   sheet({
     title: '文字から取り込む', left: 'キャンセル',
     build(body, close) {
@@ -293,7 +294,7 @@ export function openPaste({ alternate = false, targetId = null, initialText = ''
         <div class="hstack" style="margin-top:8px"><button class="btn small secondary" id="ps-clip">${I.copy}クリップボードから貼り付け</button><button class="btn small secondary" id="ps-clear">消す</button></div>
         <div class="field-label">取り込み方</div>
         <div class="segment" id="ps-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
-        ${aiOn() ? `<div class="list"><div class="row"><div class="grow">AI（${aiName()}）で読む<div class="sub">オフにすると端末の中だけで読み取ります（無料）</div></div><label class="switch"><input type="checkbox" id="ps-ai" ${useAI ? 'checked' : ''}><span></span></label></div></div>` : ''}
+        <div id="ps-how-box">${readModeHTML('ps-how', how)}</div>
         <div class="section-foot">💡 写真やスクショの文字は、iPhoneの「写真」アプリで画像を開き、右下の<b>テキスト認識ボタン</b>→「すべてをコピー」でコピーできます（無料・高精度）。</div>
         <div style="margin-top:14px"><button class="btn" id="ps-go">${I.sparkles}読み取る</button></div>
         <div id="ps-prog" style="margin-top:12px"></div>`;
@@ -301,32 +302,31 @@ export function openPaste({ alternate = false, targetId = null, initialText = ''
       $('#ps-clip', body).onclick = async () => { try { ta.value = await navigator.clipboard.readText(); toast('貼り付けました'); } catch { ta.focus(); toast('長押しして「ペースト」を選んでください'); } };
       $('#ps-clear', body).onclick = () => { ta.value = ''; ta.focus(); };
       segment($('#ps-mode', body), (v) => { mode = v; });
-      $('#ps-ai', body)?.addEventListener('change', (e) => { useAI = e.target.checked; });
+      const bindHow = () => { if ($('#ps-how', body)) segment($('#ps-how', body), (v) => { how = v; store.data.settings.readMode = v; store.save(); $('#ps-how-box', body).innerHTML = readModeHTML('ps-how', how); bindHow(); }); };
+      bindHow();
       $('#ps-go', body).onclick = async (e) => {
         const text = ta.value.trim();
         if (!text) { toast('文字を貼り付けてください'); return; }
         const prog = $('#ps-prog', body);
         e.target.disabled = true;
         try {
-          let raw, name = '';
-          if (useAI && aiOn()) {
-            prog.innerHTML = '<div class="hstack small"><span class="spinner"></span>AIが読み取っています…</div>';
-            const r = await callAI({ system: SYSTEM, content: [{ type: 'text', text: `${todayText()}${mode === 'alt' ? 'これは「予備ルート」です。すべて is_alternate=true にしてください。' : ''}\n次の文章から旅程の予定を取り出してください（source_image は 0）。\n---\n${text}` }], schema: SCHEMA, effort: 'low' });
-            raw = r.items; name = r.trip_name;
-          } else {
-            raw = parseAny(text);
-            name = raw.title || '';
-          }
-          const items = raw.map((x) => {
-            const it = { id: uid(), type: TYPES[x.type] ? x.type : 'other' };
-            for (const k of ['title', 'from', 'to', 'start', 'end', 'operator', 'number', 'platform', 'seat', 'confirmation', 'cost', 'address', 'notes', 'phone']) it[k] = (x[k] || '').trim();
-            it.reserved = !!x.reserved; it.imgs = [];
-            it._alt = mode === 'alt' || !!x.is_alternate; it._group = x.route_group || 'main';
-            return it;
+          const readers = [];
+          if (how !== 'ai') readers.push({ src: 'local', label: '端末の読み取り', run: async () => { const r = parseAny(text); return { items: r, trip_name: r.title || '' }; } });
+          if (how !== 'local' && aiOn()) readers.push({
+            src: 'ai', label: aiName(),
+            run: async (p) => {
+              p('AIが読み取っています…', 0.2);
+              let k = 0.2; const tm = setInterval(() => { k = Math.min(0.92, k + (0.95 - k) * 0.08); p('AIが読み取っています…', k); }, 700);
+              try { return await callAI({ system: SYSTEM, content: [{ type: 'text', text: `${todayText()}${mode === 'alt' ? 'これは「予備ルート」です。すべて is_alternate=true にしてください。' : ''}\n次の文章から旅程の予定を取り出してください（source_image は 0）。\n---\n${text}` }], schema: SCHEMA, effort: 'low' }); }
+              finally { clearInterval(tm); }
+            },
           });
-          if (!items.length) { prog.innerHTML = '<div class="small" style="color:var(--orange)">予定を見つけられませんでした。日付と時刻が入っているか確かめてください。</div>'; e.target.disabled = false; return; }
+          const st = await runReaders(prog, readers);
+          // 表の形の旅程表は端末の読み取りが正確。それ以外は AI を初めの選択にする
+          const out = finishReading(st, { mode, target, priority: looksLikeSchedule(text) ? 'local' : 'ai' });
+          if (!out) { prog.innerHTML += '<div class="small" style="color:var(--orange);margin-top:10px">予定を見つけられませんでした。日付と時刻が入っているか確かめてください。</div>'; e.target.disabled = false; return; }
           close();
-          setTimeout(() => review(items, name, target), 300);
+          setTimeout(() => review(out.items, out.name, target, { alternate: mode === 'alt', sources: out.sources }), 300);
         } catch (err) { prog.innerHTML = `<div class="small" style="color:var(--red)">${esc(friendlyError(err))}</div>`; e.target.disabled = false; }
       };
       setTimeout(() => ta.focus(), 450);
@@ -340,7 +340,7 @@ export function openImport({ alternate = false, targetId = null }) {
   const files = [];
   let mode = alternate ? 'alt' : 'main';
   let target = targetId;
-  let useAI = aiOn();
+  let how = readModeOf();
   let hint = '';
   let onPaste = null;
   const addFiles = (list) => { for (const f of list) if (f && (isPdf(f) || /^image\//.test(f.type || 'image/'))) files.push({ file: f, url: isPdf(f) ? '' : URL.createObjectURL(f), pdf: isPdf(f), name: f.name }); };
@@ -363,15 +363,14 @@ export function openImport({ alternate = false, targetId = null }) {
           <div class="section-title">取り込み方</div>
           <div class="segment" id="imp-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
           ${mode === 'alt' && moves.length ? `<div class="list"><div class="row"><div style="flex:none">どの予定の予備？</div><select id="imp-target"><option value="">自動で判断</option>${moves.map((e) => `<option value="${e.it.id}" ${target === e.it.id ? 'selected' : ''}>${e.at ? hm(e.at) : ''} ${esc(e.it.title || '')} ${esc(e.it.from || '')}→${esc(e.it.to || '')}</option>`).join('')}</select></div></div>` : ''}
-          <div class="list" style="margin-top:12px"><div class="row"><div style="flex:none">補足</div><input type="text" id="imp-hint" class="left" placeholder="例：10月3日の出発です（任意）" value="${esc(hint)}"></div>
-          ${aiOn() ? `<div class="row"><div class="grow">AI（${aiName()}）で読む<div class="sub">オフにすると端末の中だけで読み取ります（無料）</div></div><label class="switch"><input type="checkbox" id="imp-ai" ${useAI ? 'checked' : ''}><span></span></label></div>` : ''}</div>
-          <div class="section-foot">${useAI && aiOn() ? `${I.sparkles} AI（${aiName()}）で読み取ります。画像は読み取りのために ${aiCompany()} に送られます。` : `端末の中で読み取ります（無料・読み取り後に直せます）。<b>PDF</b>は文字がそのまま入っているので、いちばん正確です。写真の文字読み取りは、色付きの表や小さい字で間違えることがあります。${aiOn() ? '' : '「設定」で Gemini か Claude の API キーを入れると、写真もずっと正確に読めます（Gemini は無料枠あり）。'}`}</div>
+          <div class="list" style="margin-top:12px"><div class="row"><div style="flex:none">補足</div><input type="text" id="imp-hint" class="left" placeholder="例：10月3日の出発です（任意）" value="${esc(hint)}"></div></div>
+          ${aiOn() ? readModeHTML('imp-how', how) : `<div class="section-foot">端末の中で読み取ります（無料・読み取り後に直せます）。<b>PDF</b>は文字がそのまま入っているので、いちばん正確です。写真の文字読み取りは、色付きの表や小さい字で間違えることがあります。「設定」で Gemini か Claude の API キーを入れると、写真もずっと正確に読めます（Gemini は無料枠あり）。</div>`}
           <div style="margin-top:16px"><button class="btn" id="imp-go" ${files.length ? '' : 'disabled'}>${I.sparkles}${files.length ? `${files.length}件を読み取る` : '写真かPDFを選んでください'}</button></div>
           <div id="imp-prog" style="margin-top:14px"></div>`;
         const th = $('#imp-th', body);
         files.forEach((f, i) => {
           const d = document.createElement('div');
-          d.className = 'th';
+          d.className = f.pdf ? 'th pdf' : 'th';
           d.innerHTML = f.pdf ? `<div class="th-pdf">${I.note}<b>PDF</b><span>${esc(f.name || '')}</span></div><button data-rm="${i}" aria-label="外す">×</button>` : `<img src="${f.url}" alt=""><button data-rm="${i}" aria-label="外す">×</button>`;
           th.append(d);
         });
@@ -390,10 +389,10 @@ export function openImport({ alternate = false, targetId = null }) {
           } catch { toast('貼り付けできませんでした。写真を選んでください'); }
         };
         $('#imp-hint', body).oninput = (e) => { hint = e.target.value; };
-        $('#imp-ai', body)?.addEventListener('change', (e) => { useAI = e.target.checked; draw(); });
+        if ($('#imp-how', body)) segment($('#imp-how', body), (v) => { how = v; store.data.settings.readMode = v; store.save(); draw(); });
         segment($('#imp-mode', body), (v) => { mode = v; draw(); });
         $('#imp-target', body)?.addEventListener('change', (e) => { target = e.target.value || null; });
-        $('#imp-go', body).onclick = () => run(body, close, files, mode, target, hint, useAI && aiOn());
+        $('#imp-go', body).onclick = () => run(body, close, files, mode, target, hint, how);
       };
       onPaste = (e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { addFiles(fs); draw(); } };
       document.addEventListener('paste', onPaste);
@@ -402,86 +401,163 @@ export function openImport({ alternate = false, targetId = null }) {
   });
 }
 
-async function run(body, close, files, mode, target, hint, useAI) {
+// ===== 複数の読み取りを同時に行う =====
+// 読み方：both=AIと端末の両方（おすすめ） / ai=AIだけ / local=端末だけ
+export const readModeOf = () => (aiOn() ? (store.data.settings.readMode || 'both') : 'local');
+export function readModeHTML(id, cur) {
+  if (!aiOn()) return '';
+  return `<div class="field-label">読み取り方</div><div class="segment" id="${id}">${[['both', '両方で読む'], ['ai', `${aiName()}だけ`], ['local', '端末だけ']].map(([v, n]) => `<button data-v="${v}" class="${cur === v ? 'active' : ''}">${n}</button>`).join('')}</div>
+    <div class="section-foot">${cur === 'both' ? `${I.sparkles} ${aiName()} と端末の読み取りを同時に行い、結果を見比べます。片方が失敗しても、もう片方の結果で続けられます。` : cur === 'ai' ? `${aiName()} だけで読みます（${aiCompany()} に送られます）。` : '端末の中だけで読みます（無料・通信なし）。'}</div>`;
+}
+// readers: [{ src, label, run(progress) → Promise<{items, trip_name, text?}> }]
+// 進み具合を出しながら全部を同時に動かす。1つ終わった時点で「待たずに進む」を押せる
+async function runReaders(prog, readers) {
+  const st = readers.map((r) => ({ ...r, state: 'run', msg: '準備中…', p: 0, res: null, err: null }));
+  let skip; const skipP = new Promise((res) => { skip = res; });
+  const draw = () => {
+    const done = st.filter((r) => r.state === 'ok' && r.res.items.length);
+    prog.innerHTML = `<div class="readers">${st.map((r) => `<div class="reader ${r.state}">
+      <span class="r-ico">${r.state === 'run' ? '<span class="spinner"></span>' : r.state === 'ok' ? I.check : '!'}</span>
+      <div class="grow"><b>${esc(r.label)}</b><div class="sub">${r.state === 'run' ? esc(r.msg) : r.state === 'ok' ? `${r.res.items.length}件 見つかりました` : esc(friendlyError(r.err))}</div>
+      ${r.state === 'run' ? `<div class="progress" style="margin-top:6px"><i style="width:${Math.round(Math.min(1, r.p) * 100)}%"></i></div>` : ''}</div></div>`).join('')}</div>
+      ${done.length && st.some((r) => r.state === 'run') ? `<button class="btn small secondary" id="rd-skip" style="width:100%;margin-top:10px">待たずに進む（${esc(done.map((r) => r.label).join('・'))}の結果を使う）</button>` : ''}`;
+    $('#rd-skip', prog)?.addEventListener('click', () => skip());
+  };
+  draw();
+  prog.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const ps = st.map((r) => r.run((msg, p) => { r.msg = msg; if (p != null) r.p = p; draw(); })
+    .then((res) => { r.state = 'ok'; r.res = { items: res.items || [], trip_name: res.trip_name || '', text: res.text || '' }; draw(); })
+    .catch((e) => { console.error(e); r.state = 'err'; r.err = e; draw(); }));
+  await Promise.race([Promise.allSettled(ps), skipP]);
+  return st;
+}
+// 読み取った予定を、アプリの予定の形にする
+function toItems(raw, mode, keys = []) {
+  return raw.map((x) => {
+    const it = { id: uid(), type: TYPES[x.type] ? x.type : 'other' };
+    for (const k of ['title', 'from', 'to', 'start', 'end', 'operator', 'number', 'platform', 'seat', 'confirmation', 'cost', 'address', 'phone', 'notes']) it[k] = String(x[k] || '').trim();
+    it.reserved = !!x.reserved;
+    it.imgs = keys[(x.source_image || 1) - 1] ? [keys[(x.source_image || 1) - 1]] : [];
+    it._alt = mode === 'alt' || !!x.is_alternate;
+    it._group = x.route_group || 'main';
+    return it;
+  });
+}
+// 結果をまとめて確認画面へ。priority: 食い違った時に初めに選んでおく読み取り
+function finishReading(st, { mode, target, priority, keys = [], rawText = '' }) {
+  const ok = st.filter((r) => r.state === 'ok' && r.res.items.length);
+  if (!ok.length) return null;
+  ok.sort((a, b) => (a.src === priority ? -1 : b.src === priority ? 1 : 0));
+  const readings = ok.map((r) => ({ src: r.src, label: r.label, items: toItems(r.res.items, mode, keys) }));
+  const items = mergeReadings(readings);
+  const name = ok.map((r) => r.res.trip_name).find(Boolean) || '';
+  const text = rawText || ok.map((r) => r.res.text).find(Boolean) || '';
+  return { items, name, text, sources: ok.map((r) => r.label) };
+}
+
+async function run(body, close, files, mode, target, hint, how) {
   const prog = $('#imp-prog', body);
   const go = $('#imp-go', body);
   go.disabled = true;
   const say = (msg, p) => { prog.innerHTML = `<div class="hstack small"><span class="spinner"></span>${esc(msg)}</div>${p != null ? `<div class="progress" style="margin-top:8px"><i style="width:${Math.round(Math.min(1, p) * 100)}%"></i></div>` : ''}`; };
-  let ocrText = '';
   try {
-    let result, views;
     // PDF は先に文字を取り出す（文字の入っていない PDF はページを画像にする）
-    const pdfTexts = [], pdfImages = [];
-    views = [];
+    const pdfTexts = [], pdfImages = [], pdfViews = [];
     for (let i = 0; i < files.length; i++) {
       if (!files[i].pdf) continue;
       say(`PDFを読んでいます… ${files[i].name || ''}`, 0.05);
-      const res = await readPdf(files[i].file, (p) => say('PDFを読んでいます…', 0.05 + p * 0.25));
+      const res = await readPdf(files[i].file, (p) => say('PDFを読んでいます…', 0.05 + p * 0.9));
       if (res.scanned) pdfImages.push(...res.images); else pdfTexts.push(res.text);
       files[i].thumbs = await pdfThumb(files[i].file);
+      pdfViews.push(files[i].thumbs?.[0] || null);
     }
     const images = [...files.filter((f) => !f.pdf).map((f) => f.file), ...pdfImages];
-    for (const f of files) { if (f.pdf) views.push(f.thumbs?.[0] || null); }
-    if (useAI) {
-      say('画像を準備しています…', 0.3);
-      const prep = images.length ? await prepareImages(images, (p) => say('画像を準備しています…', 0.3 + p * 0.2)) : { content: [], views: [] };
-      views = [...prep.views, ...views];
-      say('AIが読み取っています…（10〜60秒ほど）', 0.5);
-      const content = [...prep.content, ...pdfTexts.map((t, k) => ({ type: 'text', text: `PDF${k + 1}の文字:\n${t}` }))];
-      result = await askAI(content, hint, mode === 'alt');
-    } else {
-      const texts = [...pdfTexts];
-      const imgViews = [];
-      for (let i = 0; i < images.length; i++) {
-        const label = `文字を読み取っています… ${i + 1}/${images.length}`;
-        say(label, 0.3 + (i / images.length) * 0.7);
-        imgViews.push((await prepForAI(images[i], { maxSide: 1568 })).view);
-        texts.push(await ocr(images[i], (p, kind) => say(kind === 'load' ? '文字読み取りの準備をしています…（初回だけ少し時間がかかります）' : label, 0.3 + ((i + p) / images.length) * 0.7)));
-      }
-      views = [...views, ...imgViews];
-      ocrText = texts.join('\n\n');
-      const hinted = hint ? texts.map((t, i) => (i === 0 ? `${hint}\n${t}` : t)) : texts;
-      const its = itemsFromOcrTexts(hinted);
-      result = { trip_name: its.title || '', items: its };
-    }
-    const raw = result.items || [];
-    if (!raw.length) {
-      prog.innerHTML = `<div class="small" style="color:var(--orange)">予定を見つけられませんでした。${ocrText ? '読み取った文字を直してから、もう一度読み取れます。' : '手入力で追加するか、別の画像を試してください。'}</div>${ocrText ? `<div style="margin-top:10px"><button class="btn secondary" id="imp-fix">${I.edit}読み取った文字を見て直す</button></div>` : ''}`;
+    // 予定に付ける画像（写真ごとに1枚）
+    say('画像を準備しています…', 0);
+    const imgViews = [];
+    for (let i = 0; i < images.length; i++) { imgViews.push((await prepForAI(images[i], { maxSide: 1568 })).view); say('画像を準備しています…', (i + 1) / images.length); }
+    const views = [...imgViews, ...pdfViews.filter(Boolean)];
+    let ocrText = '';
+    const readers = [];
+    if (how !== 'ai') readers.push({
+      src: 'local', label: '端末の読み取り',
+      run: async (p) => {
+        const texts = [...pdfTexts];
+        for (let i = 0; i < images.length; i++) {
+          const label = `文字を読み取っています… ${i + 1}/${images.length}枚`;
+          p(label, i / images.length);
+          texts.push(await ocr(images[i], (q, kind) => p(kind === 'load' ? '準備しています…（初回だけ少し時間がかかります）' : label, (i + q) / images.length)));
+        }
+        ocrText = texts.join('\n\n');
+        const hinted = hint ? texts.map((t, i) => (i === 0 ? `${hint}\n${t}` : t)) : texts;
+        const its = itemsFromOcrTexts(hinted);
+        return { trip_name: its.title || '', items: its, text: ocrText };
+      },
+    });
+    if (how !== 'local' && aiOn()) readers.push({
+      src: 'ai', label: aiName(),
+      run: async (p) => {
+        p('画像を準備しています…', 0.05);
+        const prep = images.length ? await prepareImages(images, (q) => p('画像を準備しています…', 0.05 + q * 0.2)) : { content: [] };
+        p('AIが読み取っています…（10〜60秒ほど）', 0.3);
+        // 時間がかかる間も進んでいる感じを出す
+        let k = 0.3; const tm = setInterval(() => { k = Math.min(0.92, k + (0.95 - k) * 0.06); p('AIが読み取っています…（10〜60秒ほど）', k); }, 800);
+        try {
+          const content = [...prep.content, ...pdfTexts.map((t, i) => ({ type: 'text', text: `PDF${i + 1}の文字:\n${t}` }))];
+          return await askAI(content, hint, mode === 'alt');
+        } finally { clearInterval(tm); }
+      },
+    });
+    const st = await runReaders(prog, readers);
+    // 食い違った時の初めの選択：PDF の文字だけなら端末（正確）、写真があれば AI
+    const priority = images.length ? 'ai' : 'local';
+    const keys = [];
+    const ready = st.some((r) => r.state === 'ok' && r.res.items.length);
+    if (ready) for (const b of views) { const k = 'img:' + uid(); await blobs.put(k, b); keys.push(k); }
+    const out = finishReading(st, { mode, target, priority, keys, rawText: ocrText });
+    if (!out) {
+      const errs = st.filter((r) => r.state === 'err');
+      prog.innerHTML += `<div class="small" style="color:var(--orange);margin-top:10px">予定を見つけられませんでした。${ocrText ? '読み取った文字を直してから、もう一度読み取れます。' : errs.length ? '' : '手入力で追加するか、別の画像を試してください。'}</div>
+        <div class="stack" style="margin-top:10px">${ocrText ? `<button class="btn secondary" id="imp-fix">${I.edit}読み取った文字を見て直す</button>` : ''}
+        ${how !== 'local' && errs.some((r) => r.src === 'ai') && !readers.some((r) => r.src === 'local') ? `<button class="btn secondary" id="imp-local">端末の中で読み取る（AIを使わない）</button>` : ''}</div>`;
       $('#imp-fix', body)?.addEventListener('click', () => { close(); setTimeout(() => openPaste({ alternate: mode === 'alt', targetId: target, initialText: ocrText }), 300); });
+      $('#imp-local', body)?.addEventListener('click', () => run(body, close, files, mode, target, hint, 'local'));
       go.disabled = false;
       return;
     }
-    // 画像を保存して予定に結びつける
-    const keys = [];
-    for (const b of views) { const k = 'img:' + uid(); await blobs.put(k, b); keys.push(k); }
-    const items = raw.map((x) => {
-      const it = { id: uid(), type: TYPES[x.type] ? x.type : 'other' };
-      for (const k of ['title', 'from', 'to', 'start', 'end', 'operator', 'number', 'platform', 'seat', 'confirmation', 'cost', 'address', 'phone', 'notes']) it[k] = (x[k] || '').trim();
-      it.reserved = !!x.reserved;
-      it.imgs = keys[(x.source_image || 1) - 1] ? [keys[(x.source_image || 1) - 1]] : [];
-      it._alt = mode === 'alt' || !!x.is_alternate;
-      it._group = x.route_group || 'main';
-      return it;
-    });
     close();
-    setTimeout(() => review(items, result.trip_name, target, { rawText: ocrText, alternate: mode === 'alt' }), 350);
+    setTimeout(() => review(out.items, out.name, target, { rawText: out.text, alternate: mode === 'alt', sources: out.sources }), 350);
   } catch (e) {
     console.error(e);
-    const msg = friendlyError(e);
-    prog.innerHTML = `<div class="small" style="color:var(--red)">${esc(msg)}</div>${useAI ? `<div style="margin-top:10px"><button class="btn secondary" id="imp-local">端末の中で読み取る（AIを使わない）</button></div>` : ''}`;
-    $('#imp-local', body)?.addEventListener('click', () => run(body, close, files, mode, target, hint, false));
+    prog.innerHTML = `<div class="small" style="color:var(--red)">${esc(friendlyError(e))}</div>`;
     go.disabled = false;
   }
 }
 
 // 読み取り結果の確認
-export function review(items, tripName, target, { rawText = '', alternate = false } = {}) {
+//  ・複数の読み取りで内容が違う予定は、どちらを使うか選べる
+//  ・表示中の旅に似た予定がある時は「上書き／両方残す／追加しない」を選べる
+const fmtVal = (k, v) => (k === 'type' ? (TYPES[v]?.name || v) : (k === 'start' || k === 'end') && parseLocal(v) ? `${parseLocal(v).getMonth() + 1}/${parseLocal(v).getDate()} ${hm(parseLocal(v))}` : v || '—');
+const clean = (i) => { const r = {}; for (const [k, v] of Object.entries(i)) if (!k.startsWith('_')) r[k] = v; return r; };
+export function review(items, tripName, target, { rawText = '', alternate = false, sources = [] } = {}) {
   const cur = currentTrip();
   // 旅の名前が読めた・今の旅が空でない時は、新しい旅として追加するのを初めの選択にする
   let dest = target || (cur && !cur.items.length) ? 'cur' : tripName || !cur ? 'new' : 'cur';
   items.sort((a, b) => (a.start || '9').localeCompare(b.start || '9'));
-  const sel = new Set(items.map((i) => i.id));
+  const sel = new Set(items.filter((i) => !i._weak).map((i) => i.id));
   let closeSheet = () => {};
+  // 表示中の旅にある似た予定（予備ルートは除く）
+  const exOf = (it) => {
+    if (dest !== 'cur' || it._alt) return null;
+    if (it._ex === undefined) {
+      const ex = findExisting(currentTrip(), it);
+      it._ex = ex?.id || null;
+      // 中身が同じなら「追加しない」、違うところがあれば選んでもらう（初めは今の予定を残す）
+      it._dup = ex ? 'skip' : '';
+      it._exDiff = ex ? diffs(ex, it) : [];
+    }
+    return it._ex ? currentTrip()?.items.find((x) => x.id === it._ex) : null;
+  };
   sheet({
     title: '読み取り結果', right: '旅程に追加',
     onRight: () => {
@@ -494,12 +570,11 @@ export function review(items, tripName, target, { rawText = '', alternate = fals
       } else trip = ensureTrip();
       const mains = chosen.filter((i) => !i._alt);
       const alts = chosen.filter((i) => i._alt);
-      const clean = (i) => { const { _alt, _group, ...r } = i; return r; };
-      // 本命：同じ予定がすでにあれば上書きしない
-      let added = 0;
+      let added = 0, over = 0;
       for (const m of mains) {
-        const dup = trip.items.find((x) => x.type === m.type && x.start === m.start && (x.from || '') === (m.from || '') && (x.title || '') === (m.title || ''));
-        if (dup) { if (m.reserved) dup.reserved = true; continue; }
+        const ex = dest === 'cur' && m._ex ? trip.items.find((x) => x.id === m._ex) : null;
+        if (ex && m._dup === 'over') { overwrite(ex, clean(m)); over++; continue; }
+        if (ex && m._dup !== 'both') { if (m.reserved) ex.reserved = true; continue; }
         trip.items.push(clean(m)); added++;
       }
       // 予備：まとまり（route_group）ごとに1つの予備ルートにして、いちばん合う予定にぶら下げる
@@ -513,27 +588,57 @@ export function review(items, tripName, target, { rawText = '', alternate = fals
         else { trip.items.push(...legs); added += legs.length; }
       }
       store.save(); renderTrip(); haptic();
-      toast(`${added}件の予定${altN ? `と${altN}件の予備ルート` : ''}を追加しました`, 3000);
+      const msg = [added && `${added}件を追加`, over && `${over}件を上書き`, altN && `予備ルート${altN}件を追加`].filter(Boolean).join('、');
+      toast(msg ? msg + 'しました' : '変更はありません（同じ予定はそのままにしました）', 3000);
       document.querySelector('#tabbar [data-tab="trip"]')?.click();
     },
     build(body, close) {
       closeSheet = close;
       const draw = () => {
+        const dupN = items.filter((it) => exOf(it)).length;
+        const both = items.filter((i) => i._vers?.length > 1);
+        const confN = both.filter((i) => i._conf?.length).length;
         body.innerHTML = `${cur ? `<div class="field-label" style="margin-top:4px">追加する先</div><div class="segment" id="rv-dest"><button data-v="new" class="${dest === 'new' ? 'active' : ''}">新しい旅として</button><button data-v="cur" class="${dest === 'cur' ? 'active' : ''}">表示中の旅に追加</button></div>` : ''}
-          <div class="section-foot" style="margin:0 4px 10px">${dest === 'new' && tripName ? `旅の名前：<b>${esc(tripName)}</b><br>` : ''}${items.length}件見つかりました（予備ルート ${items.filter((i) => i._alt).length}件）。タップで直せます。追加しないものはチェックを外してください。</div>
+          <div class="rv-summary">
+            <div><b>${items.length}</b><span>見つかった予定</span></div>
+            ${sources.length > 1 ? `<div><b style="color:var(--green)">${both.length - confN}</b><span>読み取りが一致</span></div><div><b style="color:${confN ? 'var(--orange)' : 'var(--label3)'}">${confN}</b><span>違いあり・選ぶ</span></div>` : ''}
+            ${dupN ? `<div><b style="color:var(--blue)">${dupN}</b><span>旅程と重複</span></div>` : ''}
+          </div>
+          <div class="section-foot" style="margin:0 4px 10px">${dest === 'new' && tripName ? `旅の名前：<b>${esc(tripName)}</b><br>` : ''}${sources.length > 1 ? `${esc(sources.join(' と '))}の結果をまとめました。内容が違う予定は、使う方をタップで選べます。` : ''}${items.some((i) => i._weak) ? '片方でしか見つからなかった予定は、チェックを外してあります。' : ''}タップで直せます。</div>
+          ${dupN ? `<div class="hstack" style="margin:0 0 12px;gap:8px"><button class="btn small secondary" data-all="over" style="flex:1">重複をすべて上書き</button><button class="btn small secondary" data-all="skip" style="flex:1">すべて今のまま</button></div>` : ''}
           ${rawText ? `<button class="btn small secondary" id="rv-raw" style="width:100%;margin-bottom:12px">${I.edit}読み取った文字を見て直す</button>` : ''}
-          ${items.map((it) => { const T = TYPES[it.type] || TYPES.other; const s = parseLocal(it.start), e = parseLocal(it.end); return `
-          <div class="ev" style="--c:${T.color};margin-bottom:10px" data-id="${it.id}">
-            <div class="top"><button class="check ${sel.has(it.id) ? 'on' : ''}" data-chk>${sel.has(it.id) ? I.check : ''}</button><div class="type-ico">${I[T.icon]}</div><div class="title">${esc(it.title || T.name)}</div>${it._alt ? '<span class="badge ng">予備</span>' : ''}${it.reserved ? '<span class="badge ok">予約済み</span>' : ''}</div>
-            <div class="small muted" style="margin-top:6px" data-edit>${s ? mdw(s) + ' ' + hm(s) : '日時不明'}${e ? ' → ' + (s && dayKey(e) !== dayKey(s) ? mdw(e) + ' ' : '') + hm(e) : ''}　${esc(it.from || '')}${it.to ? ' → ' + esc(it.to) : ''}${it.platform ? '　' + esc(it.platform) : ''}${it.seat ? '　座席' + esc(it.seat) : ''}</div>
+          ${items.map((it, n) => {
+            const T = TYPES[it.type] || TYPES.other; const s = parseLocal(it.start), e = parseLocal(it.end);
+            const ex = exOf(it);
+            const on = sel.has(it.id);
+            const srcBadge = sources.length > 1 ? (it._vers?.length > 1 ? (it._conf?.length ? '<span class="badge warn">違いあり</span>' : `<span class="badge ok">${I.check} 一致</span>`) : `<span class="badge">${esc(it._vers?.[0]?.label || '')}のみ</span>`) : '';
+            return `
+          <div class="ev rv-card ${on ? '' : 'off'}" style="--c:${T.color};--i:${Math.min(n, 12)}" data-id="${it.id}">
+            <div class="top"><button class="check ${on ? 'on' : ''}" data-chk aria-label="追加する">${on ? I.check : ''}</button><div class="type-ico">${I[T.icon]}</div><div class="title">${esc(it.title || T.name)}</div>${it._alt ? '<span class="badge ng">予備</span>' : ''}${srcBadge}</div>
+            <div class="small muted rv-line" data-edit>${s ? mdw(s) + ' ' + hm(s) : '日時不明'}${e ? ' → ' + (s && dayKey(e) !== dayKey(s) ? mdw(e) + ' ' : '') + hm(e) : ''}　${esc(it.from || '')}${it.to ? ' → ' + esc(it.to) : ''}${it.platform ? '　' + esc(it.platform) : ''}${it.seat ? '　座席' + esc(it.seat) : ''}${it.reserved ? '　<b style="color:var(--green)">予約済み</b>' : ''}</div>
+            ${it._conf?.length ? `<div class="pick">
+              <div class="pick-head">${I.warn}<span>読み取りが違います。使う方を選んでください</span></div>
+              <div class="pick-opts">${it._vers.map((v, k) => `<button class="pick-opt ${it._pick === k ? 'on' : ''}" data-pick="${k}"><span class="pick-radio"></span><div class="grow"><b>${esc(v.label)}</b>${it._conf.map((c) => `<div class="pick-row"><span>${c.label}</span>${esc(fmtVal(c.k, v.data[c.k]))}</div>`).join('')}</div></button>`).join('')}</div>
+            </div>` : ''}
+            ${ex ? `<div class="pick dup">
+              <div class="pick-head">${I.copy}<span>旅程に似た予定があります：<b>${esc(ex.title || '')}</b> ${parseLocal(ex.start) ? hm(parseLocal(ex.start)) : ''}</span></div>
+              ${it._exDiff?.length ? `<div class="pick-diff">${it._exDiff.map((c) => `<div class="pick-row"><span>${c.label}</span><s>${esc(fmtVal(c.k, ex[c.k]))}</s> → <b>${esc(fmtVal(c.k, it[c.k]))}</b></div>`).join('')}</div>` : '<div class="small muted" style="margin:2px 0 6px">中身は同じです</div>'}
+              <div class="segment small" data-dup>${[['skip', '今のまま'], ['over', '上書き'], ['both', '両方残す']].map(([v, l]) => `<button data-v="${v}" class="${it._dup === v ? 'active' : ''}">${l}</button>`).join('')}</div>
+            </div>` : ''}
             <button class="link-btn small" data-edit>${I.edit} 直す</button>
           </div>`; }).join('')}`;
-        if ($('#rv-dest', body)) segment($('#rv-dest', body), (v) => { dest = v; });
+        if ($('#rv-dest', body)) segment($('#rv-dest', body), (v) => { dest = v; draw(); });
         $('#rv-raw', body)?.addEventListener('click', () => { closeSheet(); setTimeout(() => openPaste({ alternate, targetId: target, initialText: rawText }), 350); });
         $$('[data-chk]', body).forEach((b) => b.onclick = () => { const id = b.closest('[data-id]').dataset.id; sel.has(id) ? sel.delete(id) : sel.add(id); haptic(); draw(); });
+        $$('[data-pick]', body).forEach((b) => b.onclick = () => {
+          const it = items.find((x) => x.id === b.closest('[data-id]').dataset.id);
+          pickVersion(it, +b.dataset.pick); it._ex = undefined; sel.add(it.id); haptic(); draw();
+        });
+        $$('[data-dup]', body).forEach((g) => segment(g, (v) => { const it = items.find((x) => x.id === g.closest('[data-id]').dataset.id); it._dup = v; sel.add(it.id); haptic(); }));
+        $$('[data-all]', body).forEach((b) => b.onclick = () => { for (const it of items) if (it._ex) { it._dup = b.dataset.all; sel.add(it.id); } haptic(); draw(); });
         $$('[data-edit]', body).forEach((b) => b.onclick = () => {
           const it = items.find((x) => x.id === b.closest('[data-id]').dataset.id);
-          editItem(it, { onSave: (n) => { Object.assign(it, n); draw(); } });
+          editItem(clean(it), { onSave: (n) => { Object.assign(it, n); it._conf = []; it._ex = undefined; draw(); } });
         });
       };
       draw();
