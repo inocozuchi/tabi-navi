@@ -34,12 +34,31 @@ function go(t, sub) {
   $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.tab === t));
   if (t === 'transit' && sub) showTransitTab(sub); else renders[t]();
   $('#view-' + t).scrollTop = 0;
+  updateNav();
 }
 $$('#tabbar button').forEach((b) => b.addEventListener('click', () => {
   if (b.dataset.tab === tab) { $('#view-' + tab).scrollTo({ top: 0, behavior: 'smooth' }); return; }
   b.classList.remove('bounce'); void b.offsetWidth; b.classList.add('bounce');
   haptic(); go(b.dataset.tab);
 }));
+
+// iOS の小さいナビゲーションバー：大きい見出しが上に隠れたら、上に小さく見出しを出す
+const navbar = document.createElement('div');
+navbar.className = 'nav-small';
+navbar.innerHTML = '<span></span>';
+$('#app').append(navbar);
+function updateNav() {
+  const v = $('#view-' + tab);
+  const h = v && $('.large-title h1', v);
+  if (!h) { navbar.classList.remove('show'); return; }
+  const top = h.getBoundingClientRect().bottom;
+  // 上の余白（ノッチの分を含む）より上に見出しが隠れたら出す
+  const show = top < (parseFloat(getComputedStyle(v).paddingTop) || 0) + 8;
+  navbar.firstChild.textContent = tab === 'trip' ? (currentTrip()?.name || h.textContent) : h.textContent;
+  navbar.classList.toggle('show', show);
+}
+$$('.view').forEach((v) => v.addEventListener('scroll', () => requestAnimationFrame(updateNav), { passive: true }));
+navbar.onclick = () => $('#view-' + tab)?.scrollTo({ top: 0, behavior: 'smooth' });
 
 bindStatus(go);
 bindTools();

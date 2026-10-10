@@ -615,3 +615,121 @@ input::placeholder, textarea::placeholder { color: var(--label3); }
 .gap-slot.compact .gap-info { font-size: 13px; color: var(--label2); }
 .gap-slot.compact .gap-add-btn { height: 26px; padding: 0 10px; font-size: 12.5px; background: var(--fill); color: var(--blue); box-shadow: none; }
 .thumbs .th.pdf { aspect-ratio: 3/4; }
+
+/* ======================================================================
+   iOS 風の見た目（全体の調整）
+   ・面は影をほぼ付けず、灰色の背景に白い面を置く（設定アプリと同じ考え方）
+   ・ボタンは「塗り（青）」「色つき（薄い青）」「文字だけ」の3種類に統一
+   ====================================================================== */
+:root { --shadow: 0 1px 2px rgba(0,0,0,.05); --radius: 14px; --tint: color-mix(in srgb, var(--blue) 12%, transparent); --float: 0 10px 30px rgba(0,0,0,.14); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --shadow: none; --tint: color-mix(in srgb, var(--blue) 22%, transparent); --float: 0 10px 30px rgba(0,0,0,.5); } }
+:root[data-theme="dark"] { --shadow: none; --tint: color-mix(in srgb, var(--blue) 22%, transparent); --float: 0 10px 30px rgba(0,0,0,.5); }
+
+/* 見出し */
+.large-title { margin: 4px auto 12px; align-items: flex-end; }
+.large-title h1 { font-size: 34px; font-weight: 800; letter-spacing: -.025em; line-height: 1.1; }
+.large-title .eyebrow { font-size: 13px; font-weight: 600; color: var(--label2); margin-bottom: 2px; letter-spacing: .01em; }
+.large-title .actions { padding-bottom: 3px; }
+.nav-small { z-index: 45; }
+.nav-small span { max-width: calc(100% - 120px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.section-head { margin: 24px 2px 10px; }
+.section-head h2 { font-size: 20px; font-weight: 700; }
+.section-title .opt { margin-left: 8px; text-transform: none; color: var(--label3); letter-spacing: 0; }
+
+/* ボタン */
+.btn { border-radius: 14px; letter-spacing: 0; }
+.btn.secondary { background: var(--tint); color: var(--blue); }
+.btn.danger { background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); }
+.btn.small { height: 32px; font-size: 14px; padding: 0 12px; border-radius: 16px; }
+.btn.small svg { width: 15px; height: 15px; }
+.btn svg { stroke-width: 2.2; }
+.btn.big-cta { height: 52px; margin: 4px 0 16px; box-shadow: 0 8px 22px color-mix(in srgb, var(--blue) 35%, transparent); font-size: 17px; }
+.icon-btn { width: 34px; height: 34px; border-radius: 17px; background: var(--tint); font-size: 19px; }
+.icon-btn.filled { background: var(--blue); color: #fff; box-shadow: 0 4px 12px color-mix(in srgb, var(--blue) 35%, transparent); }
+.icon-btn svg { stroke-width: 2.3; }
+.text-btn { display: inline-flex; align-items: center; gap: 4px; color: var(--blue); font-size: 15px; font-weight: 600; padding: 6px 2px; white-space: nowrap; transition: opacity .15s; }
+.text-btn:active { opacity: .5; }
+.text-btn svg { width: 16px; height: 16px; stroke-width: 2.4; }
+button.row:active, label.row:active, .row.tappable:active { background: var(--fill); transition: none; }
+
+/* 上の時計（小さめのウィジェット） */
+.hero { padding: 12px 16px 10px; border-radius: 20px; margin: 0 auto 12px; box-shadow: 0 8px 24px rgba(20,60,200,.2); }
+.hero .date { display: none; }
+.hero .clock { font-size: 48px; font-weight: 250; line-height: 1.1; }
+.hero .clock .sec { font-size: 18px; }
+.hero-top { align-items: center; }
+.hero-wx { padding-top: 0; }
+.hourly { margin-top: 8px; padding-top: 8px; gap: 12px; }
+.hourly div b { font-size: 18px; margin: 2px 0; }
+
+/* いまの状況 */
+.card.status { padding: 14px 16px 4px; }
+.status-label { font-size: 12.5px; }
+.status-big { font-size: 32px; letter-spacing: -.02em; }
+.status-sub { font-size: 15px; line-height: 1.4; }
+.status-alarm { padding: 11px 0 9px; font-size: 15px; }
+
+/* 表示中の旅 */
+.trip-card { cursor: pointer; padding: 14px 16px 12px; }
+.tc-top { align-items: center; gap: 10px; }
+.tc-name-wrap { flex: 1; min-width: 0; }
+.tc-eyebrow { font-size: 12px; font-weight: 600; color: var(--label2); }
+.tc-name { display: block; font-size: 21px; }
+.tc-chev { display: inline-block; vertical-align: middle; margin-left: 4px; color: var(--label3); }
+.tc-chev svg { width: 15px; height: 15px; transform: rotate(90deg); stroke-width: 2.4; }
+.tc-new { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 36px; padding: 0 14px 0 11px; border-radius: 18px; background: var(--blue); color: #fff; font-size: 14.5px; font-weight: 700; box-shadow: 0 6px 16px color-mix(in srgb, var(--blue) 35%, transparent); transition: transform .18s cubic-bezier(.3,1.5,.5,1); white-space: nowrap; }
+.tc-new:active { transform: scale(.92); }
+.tc-new svg { width: 17px; height: 17px; stroke-width: 2.6; }
+.tc-meta { margin-top: 4px; }
+
+/* はじめての時 */
+.start-card { padding: 24px 18px 16px; box-shadow: var(--shadow); }
+.start-card p { margin-bottom: 16px; }
+.empty-card { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 24px 18px 20px; background: var(--bg2); border-radius: var(--radius); box-shadow: var(--shadow); animation: fadeUp .4s both; }
+.empty-card b { font-size: 17px; }
+.empty-card span { font-size: 13.5px; color: var(--label2); line-height: 1.55; margin-bottom: 8px; }
+.ec-ico { width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center; background: var(--tint); color: var(--blue); font-size: 26px; margin-bottom: 4px; }
+
+/* タイル */
+.tile { box-shadow: var(--shadow); }
+.tile-grid.compact .tile { min-height: 98px; padding: 12px; }
+.tile-grid.compact .tile .tile-ico { width: 34px; height: 34px; border-radius: 10px; margin-bottom: 6px; }
+.tile-grid.compact .tile b { font-size: 15px; }
+
+/* 新しい旅 */
+.nt-hero { display: grid; place-items: center; margin: 6px 0 16px; }
+.nt-hero span { width: 76px; height: 76px; border-radius: 22px; display: grid; place-items: center; font-size: 40px; background: linear-gradient(160deg, #2a7bff, #1a4fd0 55%, #12308a); box-shadow: 0 12px 30px rgba(20,60,200,.35); animation: splashPop .7s cubic-bezier(.2,1.4,.4,1) both; }
+.row input.big-input, .big-input { flex: 1; min-width: 0; border: 0; background: transparent; outline: none; font-size: 20px; font-weight: 600; padding: 8px 0; min-height: 44px; color: var(--label); }
+.field.big { font-size: 19px; font-weight: 600; min-height: 52px; border-radius: 12px; }
+
+/* スケジュール */
+.day-tab { height: 32px; padding: 0 13px; font-size: 13.5px; box-shadow: var(--shadow); }
+.day-tab.active { box-shadow: 0 4px 12px color-mix(in srgb, var(--blue) 30%, transparent); }
+.chip { height: 30px; font-size: 13.5px; box-shadow: none; background: var(--bg2); font-weight: 500; }
+.chip.on { font-weight: 600; }
+.ev { padding: 11px 13px 11px 13px; border-radius: 14px; border-left-width: 3px; }
+.ev .title { font-size: 16px; letter-spacing: -.01em; }
+.ev .type-ico { width: 26px; height: 26px; border-radius: 7px; font-size: 15px; }
+.ev .route { font-size: 15px; font-weight: 500; margin-top: 5px; }
+.ev .meta { margin-top: 7px; }
+.ev .acts { margin-top: 9px; gap: 6px; }
+.ev .acts button, .ev .acts a { height: 28px; padding: 0 10px; font-size: 13px; border-radius: 14px; background: var(--tint); font-weight: 600; }
+.ev .acts svg { width: 14px; height: 14px; stroke-width: 2.2; }
+.badge { font-size: 11px; padding: 2px 6px; border-radius: 6px; }
+.tl-item .time { top: 11px; font-size: 15px; }
+.tl-item .dot { top: 14px; }
+.gap-slot { border-style: dashed; background: color-mix(in srgb, var(--blue) 6%, transparent); }
+
+/* いまの予定へ（すりガラスの小さいボタン） */
+.now-jump { background: var(--bar); color: var(--red); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); box-shadow: var(--float); border: .5px solid var(--sep); height: 38px; font-size: 14px; }
+.now-jump.up svg { transform: none; }
+
+/* 一覧の行・入力 */
+.list { box-shadow: var(--shadow); }
+.row { min-height: 44px; }
+.sheet .sheet-body .list + .list { margin-top: 14px; }
+.sheet { border-radius: 16px 16px 0 0; }
+/* 日付タブは上の小さいナビゲーションバーのすぐ下に固定 */
+.day-tabs.sticky { top: 34px; padding: 8px 16px; background: color-mix(in srgb, var(--bg) 86%, transparent); }
+.card.status.solo { padding: 0 16px; }
+.card.status.solo .status-alarm { margin-top: 0; border-top: 0; }

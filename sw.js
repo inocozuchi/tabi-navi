@@ -1,5 +1,5 @@
 // オフライン用：アプリの部品を保存しておき、通信が無くても開けるようにする
-const VERSION = 'tabinavi-v9';
+const VERSION = 'tabinavi-v10';
 const CORE = [
   './', './index.html', './app.css', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',

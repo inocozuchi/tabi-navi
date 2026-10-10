@@ -16,7 +16,7 @@ window.addEventListener('tabi-pos', (e) => { pos = e.detail; });
 // ===== いちばん上：時刻と天気（常に表示） =====
 export function heroHTML() {
   return `<div class="hero" id="hero"><div class="glow"></div>
-    <div class="hero-top"><div><div class="date" id="h-date"></div><div class="clock" id="h-clock"></div></div>
+    <div class="hero-top"><div><div class="date" id="h-date">いまの時刻</div><div class="clock" id="h-clock"></div></div>
       <button class="hero-wx" id="h-wx"><span class="spinner" style="border-color:rgba(255,255,255,.3);border-top-color:#fff"></span></button></div>
     <div class="hourly" id="h-hourly"></div>
   </div>`;
@@ -26,7 +26,7 @@ export function tickHome() {
   if (!c) return;
   const n = new Date();
   c.innerHTML = `${n.getHours()}:${pad(n.getMinutes())}${store.data.settings.showSeconds ? `<span class="sec">${pad(n.getSeconds())}</span>` : ''}`;
-  $('#h-date').textContent = `${n.getMonth() + 1}月${n.getDate()}日 ${WD[n.getDay()]}曜日`;
+  const dt = $('#h-date'); if (dt) dt.textContent = 'いまの時刻';
 }
 export async function drawWeather(force) {
   tickHome();
@@ -61,7 +61,12 @@ export function statusHTML() {
     : `<button class="status-alarm" data-act="alarmfor">${I.alarm}<span>アラームなし</span><span class="link">自動で設定</span><span class="chev">${I.chev}</span></button>`;
   if (!t) return '';
   const evs = events(t).filter((e) => e.at);
-  if (!evs.length) return `<div class="card status">${alarmLine}</div>`;
+  if (!evs.length) {
+    // 予定がまだ無い旅：行く日が決まっていれば、出発までを出す
+    const st = t.start && new Date(t.start + 'T00:00');
+    if (st && st > now) return `<div class="card status"><div class="status-label">${esc(t.name || '旅')}・出発まで</div><div class="status-big">${Math.ceil((st - now) / 864e5)}日</div><div class="status-sub">${mdw(st)}<br><span class="muted small">予定を入れると、時間ごとに案内します</span></div>${alarmLine}</div>`;
+    return `<div class="card status solo">${alarmLine}</div>`;
+  }
   const first = evs[0].at;
   const n = nextEvent(now);
   const done = evs.filter((e) => (e.end || e.at) < now).length;
@@ -206,7 +211,7 @@ export async function dayWeather(trip) {
 // ===== 道具タブ =====
 const TILES = [
   ['paste', '文字から取り込む', I.copy, 'var(--blue)', '予約メール・乗換結果・メモ'],
-  ['import', 'スクショから取り込む', I.photo, 'var(--indigo)', '予約画面・乗換案内'],
+  ['import', '写真・PDFから取り込む', I.photo, 'var(--indigo)', '旅程表PDF・スクショ・予約画面'],
   ['wish', '行きたいリスト', I.star, 'var(--pink)', 'スポットをためて旅程に'],
   ['shiori', '旅のしおり', I.note, 'var(--teal)', '印刷・PDFで保存'],
   ['memo', 'メモ', I.edit, 'var(--orange)', '部屋番号・集合時間など'],

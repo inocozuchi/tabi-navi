@@ -203,6 +203,25 @@ export function confirmBox(title, msg = '', ok = 'OK', { destructive = false, ca
   });
 }
 
+// 文字を1つ入力してもらう（ブラウザの prompt の代わり。ホーム画面のアプリでも確実に出る）
+export function askText({ title, label = '', value = '', placeholder = '', ok = '保存' }) {
+  return new Promise((res) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; res(v); } };
+    sheet({
+      title, right: ok,
+      onRight: (body) => { const v = $('#ask-in', body).value.trim(); if (!v) { $('#ask-in', body).focus(); return false; } finish(v); },
+      onClose: () => finish(null),
+      build(body, close) {
+        body.innerHTML = `${label ? `<div class="field-label">${esc(label)}</div>` : ''}<input id="ask-in" class="field big" value="${esc(value)}" placeholder="${esc(placeholder)}" enterkeyhint="done" autocomplete="off">`;
+        const f = $('#ask-in', body);
+        f.onkeydown = (e) => { if (e.key === 'Enter' && f.value.trim()) { finish(f.value.trim()); close(); } };
+        setTimeout(() => { f.focus(); f.select(); }, 420);
+      },
+    });
+  });
+}
+
 // セグメント（切り替えボタン）の動く背景
 export function segment(el, onChange) {
   const btns = $$('button', el);

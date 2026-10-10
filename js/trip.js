@@ -1,5 +1,5 @@
 // 旅程：時系列の一覧・予約チェック・予備ルート・編集
-import { $, $$, esc, uid, store, sheet, page, toast, confirmBox, switchHTML, haptic, I, TYPES, TRANSPORT, needsResv, parseLocal, hm, dayKey, mdw, dur, countdown, yen, copyText, blobs, download, segment, toLocalISO } from './util.js';
+import { $, $$, esc, uid, store, sheet, page, toast, confirmBox, switchHTML, haptic, I, TYPES, TRANSPORT, needsResv, askText, parseLocal, hm, dayKey, mdw, dur, countdown, yen, copyText, blobs, download, segment, toLocalISO } from './util.js';
 import { openImport, openPaste } from './ai.js';
 import { heroHTML, drawWeather, statusHTML, afterStatus, dayWeather, tickHome, tickStatus } from './home.js';
 import { transitLinks, mapsSearchUrl, spotSearch } from './transit.js';
@@ -58,13 +58,15 @@ export function renderTrip() {
   const t = currentTrip();
   const now = new Date();
   if (!t) {
-    el().innerHTML = `${heroHTML()}${statusHTML()}
+    el().innerHTML = `${titleHTML(false)}${heroHTML()}${statusHTML()}
       <div class="start-card">
         <div class="start-emoji">🧳</div>
         <h2>旅程をつくりましょう</h2>
-        <p>手元にあるものを選ぶだけ。読み取って時間順に並べます。</p>
-        <div class="steps"><span><b>1</b>取り込む</span><i></i><span><b>2</b>確認して選ぶ</span><i></i><span><b>3</b>完成</span></div>
+        <p>旅をつくって、予約メールや旅程表を取り込むだけ。<br>時間順に並べて、いまの予定を教えます。</p>
+        <button class="btn big-cta" data-act="newtrip">${I.plus}新しい旅をつくる</button>
+        <div class="steps"><span><b>1</b>旅をつくる</span><i></i><span><b>2</b>取り込む</span><i></i><span><b>3</b>完成</span></div>
       </div>
+      <div class="section-title">すぐ取り込む（旅も自動でつくります）</div>
       ${buildTiles(true)}`;
     drawWeather();
     return;
@@ -94,23 +96,24 @@ export function renderTrip() {
 
   const firstAt = evs.find((e) => e.at)?.at, lastAt = [...evs].reverse().find((e) => e.at)?.at;
   const nDays = dayKeys.length;
-  let html = `${heroHTML()}${statusHTML()}
-    <button class="trip-card" data-act="trips" style="--i:2">
-      <div class="tc-top"><div class="tc-name">${esc(t.name || '旅')}</div><span class="tc-switch">${d.trips.length > 1 ? `${d.trips.length}つの旅` : '切り替え'} ${I.chev}</span></div>
-      <div class="tc-meta">${firstAt ? `${mdw(firstAt)}${lastAt && dayKey(lastAt) !== dayKey(firstAt) ? ` 〜 ${mdw(lastAt)}` : ''}・${nDays}日間` : '日付はまだありません'}</div>
+  const ts = t.start && parseLocal(t.start + 'T00:00'), te = t.end && parseLocal(t.end + 'T00:00');
+  let html = `${titleHTML(true)}${heroHTML()}${statusHTML()}
+    <div class="trip-card" data-act="trips" role="button" tabindex="0">
+      <div class="tc-top">
+        <div class="tc-name-wrap"><div class="tc-eyebrow">表示中の旅${d.trips.length > 1 ? `・全${d.trips.length}件` : ''}</div><div class="tc-name">${esc(t.name || '旅')}<span class="tc-chev">${I.chev}</span></div></div>
+        <button class="tc-new" data-act="newtrip" aria-label="新しい旅をつくる">${I.plus}<span>新しい旅</span></button>
+      </div>
+      <div class="tc-meta">${firstAt ? `${mdw(firstAt)}${lastAt && dayKey(lastAt) !== dayKey(firstAt) ? ` 〜 ${mdw(lastAt)}` : ''}・${nDays}日間` : ts ? `${mdw(ts)}${te && +te !== +ts ? ` 〜 ${mdw(te)}` : ''}` : '日付はまだありません'}</div>
       <div class="tc-stats">
         <div><b>${items.length}</b><span>予定</span></div>
-        <div><b style="color:${resv === resvItems.length ? 'var(--green)' : 'var(--orange)'}">${resv}/${resvItems.length}</b><span>予約済み</span></div>
+        <div><b style="color:${!resvItems.length ? 'var(--label3)' : resv === resvItems.length ? 'var(--green)' : 'var(--orange)'}">${resvItems.length ? `${resv}/${resvItems.length}` : '—'}</b><span>予約済み</span></div>
         <div><b>${cost ? yen(cost) : '—'}</b><span>費用の合計</span></div>
       </div>
-    </button>
+    </div>
     ${buildTiles(false)}
     <div class="section-head">
-      <h2>旅程</h2>
-      <div class="actions">
-        <button class="icon-btn" data-act="menu" aria-label="旅のメニュー">${I.dots}</button>
-        <button class="icon-btn filled" data-act="addmenu" aria-label="予定を追加">${I.plus}</button>
-      </div>
+      <h2>スケジュール</h2>
+      <div class="actions"><button class="text-btn" data-act="addmenu">${I.plus}予定を追加</button></div>
     </div>
     <!-- 1日ごとのタイムライン切替タブ -->
     ${dayKeys.length > 1 ? `
@@ -124,7 +127,7 @@ export function renderTrip() {
 
     <div class="chips">${[['all', 'すべて'], ['unres', '未予約'], ['move', '移動'], ['stay', '宿泊'], ['alt', '予備ルートあり']].map(([k, n]) => `<button class="chip ${filter === k ? 'on' : ''}" data-filter="${k}">${n}</button>`).join('')}</div>`;
 
-  if (!items.length) html += `<div class="empty">${I.route}<div>まだ予定がありません</div><div class="small">右上の ＋ から追加できます</div></div>`;
+  if (!items.length) html += `<div class="empty-card"><div class="ec-ico">${I.route}</div><b>まだ予定がありません</b><span>上の「写真・PDF」や「文字を貼る」から取り込むか、手入力で追加できます。</span><button class="btn small" data-act="addmenu">${I.plus}予定を追加</button></div>`;
 
   let lastDay = '', nowPlaced = false, prev = null;
   const noTime = shown.filter((e) => !e.at);
@@ -205,9 +208,19 @@ function updateNowJump() {
   if (!b) return;
   const tg = nowTarget();
   const r = tg?.getBoundingClientRect(), v = el().getBoundingClientRect();
-  const off = !!r && (r.bottom < v.top + 80 || r.top > v.bottom - 140) && $('.tl-item.past', el());
+  // スケジュールの所まで下りてきた時だけ（上のカードに重ならないように）
+  const tl = $('.tl', el());
+  const inTl = !!tl && tl.getBoundingClientRect().top < v.top + v.height * 0.45;
+  const off = inTl && !!r && (r.bottom < v.top + 80 || r.top > v.bottom - 140) && $('.tl-item.past', el());
   b.classList.toggle('show', !!off);
   if (r) b.classList.toggle('up', r.bottom < v.top + 80);
+}
+
+// いちばん上：日付と大きな見出し（iOS の大きいタイトル）
+function titleHTML(hasTrip) {
+  const n = new Date();
+  return `<header class="large-title home"><div><div class="eyebrow">${n.getMonth() + 1}月${n.getDate()}日 ${'日月火水木金土'[n.getDay()]}曜日</div><h1>旅程</h1></div>
+    <div class="actions">${hasTrip ? `<button class="icon-btn" data-act="menu" aria-label="旅のメニュー">${I.dots}</button>` : ''}<button class="icon-btn filled" data-act="${hasTrip ? 'addmenu' : 'newtrip'}" aria-label="${hasTrip ? '予定を追加' : '新しい旅をつくる'}">${I.plus}</button></div></header>`;
 }
 
 // 旅程をつくる・ふやす入口（はじめは大きいタイル、旅がある時は横に並ぶ小さいタイル）
@@ -231,15 +244,16 @@ function tripSwitcher() {
     title: '旅を選ぶ', left: '閉じる',
     build(body, close) {
       const d = store.data;
-      body.innerHTML = `<div class="list">${d.trips.map((x) => {
+      body.innerHTML = `<button class="btn" data-new style="margin-bottom:14px">${I.plus}新しい旅をつくる</button>
+      <div class="section-title" style="margin-top:4px">旅の一覧</div>
+      <div class="list">${d.trips.map((x) => {
         const ev = events(x).filter((e) => e.at);
-        const a = ev[0]?.at, z = ev[ev.length - 1]?.at;
+        const a = ev[0]?.at || (x.start && parseLocal(x.start + 'T00:00')), z = ev[ev.length - 1]?.at || (x.end && parseLocal(x.end + 'T00:00'));
         return `<button class="row icon-row" data-trip="${x.id}"><span class="ico" style="background:${x.id === d.currentTrip ? 'var(--blue)' : 'var(--gray)'}">${I.route}</span><div class="grow">${esc(x.name || '旅')}<div class="sub">${a ? `${mdw(a)}${z && dayKey(z) !== dayKey(a) ? '〜' + mdw(z) : ''}・` : ''}予定${x.items.length}件</div></div>${x.id === d.currentTrip ? `<span style="color:var(--blue)">${I.check}</span>` : ''}</button>`;
       }).join('')}</div>
-      <div class="list" style="margin-top:14px"><button class="row icon-row" data-new><span class="ico" style="background:var(--green)">${I.plus}</span><div class="grow">新しい旅をつくる</div></button>
-      <button class="row icon-row" data-menu><span class="ico" style="background:var(--gray)">${I.dots}</span><div class="grow">この旅の設定<div class="sub">名前・しおり・共有・削除など</div></div><span class="chev">${I.chev}</span></button></div>`;
+      <div class="list" style="margin-top:14px"><button class="row icon-row" data-menu><span class="ico" style="background:var(--gray)">${I.dots}</span><div class="grow">この旅の設定<div class="sub">名前・しおり・共有・削除など</div></div><span class="chev">${I.chev}</span></button></div>`;
       $$('[data-trip]', body).forEach((b) => b.onclick = () => { d.currentTrip = b.dataset.trip; selectedDay = 'all'; store.save(); haptic(); close(); renderTrip(); el().scrollTo({ top: 0, behavior: 'smooth' }); });
-      $('[data-new]', body).onclick = () => { close(); newTrip(); renderTrip(); };
+      $('[data-new]', body).onclick = () => { close(); setTimeout(() => newTrip(), 300); };
       $('[data-menu]', body).onclick = () => { close(); setTimeout(tripMenu, 250); };
     },
   });
@@ -305,7 +319,7 @@ export function bindTrip() {
   el().addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; updateNowJump(); parallax(); }); }, { passive: true });
   el().addEventListener('change', (e) => {
     if (e.target.id !== 'trip-sel') return;
-    if (e.target.value === '__new') { newTrip(); renderTrip(); return; }
+    if (e.target.value === '__new') { newTrip(); return; }
     store.data.currentTrip = e.target.value; store.save(); renderTrip();
   });
   el().addEventListener('click', async (e) => {
@@ -334,6 +348,7 @@ export function bindTrip() {
       }
       case 'import': openImport({}); break;
       case 'trips': tripSwitcher(); break;
+      case 'newtrip': newTrip(); break;
       case 'wish': (await import('./tools.js')).openWishlist(); break;
       case 'paste': openPaste({}); break;
       case 'add': editItem(null); break;
@@ -481,6 +496,60 @@ function addMenu() {
     },
   });
 }
+// ===== 新しい旅をつくる =====
+// 名前と日程（どちらもあとで変えられる）を入れて、そのまま予定の入れ方を選べる
+export function newTrip({ then } = {}) {
+  const today = new Date();
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  let made = null;
+  const create = (body) => {
+    if (made) return made;
+    const name = $('#nt-name', body).value.trim();
+    const st = $('#nt-s', body).value, en = $('#nt-e', body).value;
+    const sd = st && parseLocal(st + 'T00:00');
+    made = { id: uid(), name: name || (sd ? `${sd.getMonth() + 1}月${sd.getDate()}日からの旅` : '新しい旅'), items: [], created: Date.now() };
+    if (st) made.start = st;
+    if (en) made.end = en;
+    store.data.trips.push(made); store.data.currentTrip = made.id; selectedDay = 'all'; store.save();
+    renderTrip(); haptic();
+    toast(`「${made.name}」をつくりました`);
+    return made;
+  };
+  sheet({
+    title: '新しい旅', right: 'つくる',
+    onRight: (body) => { create(body); then?.(); },
+    build(body, close) {
+      body.innerHTML = `
+        <div class="nt-hero"><span>🧳</span></div>
+        <div class="list"><div class="row"><input id="nt-name" class="big-input" placeholder="旅の名前（例：京都 2泊3日）" enterkeyhint="done" autocomplete="off"></div></div>
+        <div class="section-title">日程<span class="opt">あとで決めてもOK</span></div>
+        <div class="list">
+          <div class="row"><div style="flex:none;min-width:84px">行く日</div><input type="date" id="nt-s" value=""></div>
+          <div class="row"><div style="flex:none;min-width:84px">帰る日</div><input type="date" id="nt-e" value=""></div>
+        </div>
+        <div class="section-title">つくったら、予定を入れる</div>
+        <div class="tile-grid compact">${TILES.filter((x) => !x[6]).map(([k, n, sub, c, ic, rec], i) => `<button class="tile" data-go="${k}" style="--c:${c};--i:${i}">${rec ? '<span class="tile-rec">おすすめ</span>' : ''}<span class="tile-ico">${I[ic]}</span><b>${n}</b><span class="tile-sub">${sub}</span></button>`).join('')}</div>
+        <button class="btn" id="nt-go" style="margin-top:6px">${I.plus}旅をつくる（予定はあとで）</button>`;
+      const nm = $('#nt-name', body), s1 = $('#nt-s', body), s2 = $('#nt-e', body);
+      s1.min = iso(new Date(today.getFullYear() - 1, 0, 1));
+      s1.onchange = () => { if (s1.value && (!s2.value || s2.value < s1.value)) s2.value = s1.value; };
+      nm.onkeydown = (e) => { if (e.key === 'Enter') nm.blur(); };
+      $('#nt-go', body).onclick = () => { create(body); close(); then?.(); };
+      $$('[data-go]', body).forEach((b) => b.onclick = () => {
+        create(body); close();
+        const k = b.dataset.go;
+        setTimeout(async () => {
+          if (k === 'import') openImport({});
+          else if (k === 'paste') openPaste({});
+          else if (k === 'wish') (await import('./tools.js')).openWishlist();
+          else editItem(null);
+        }, 300);
+      });
+      setTimeout(() => nm.focus(), 450);
+    },
+  });
+}
+
 function tripMenu() {
   const t = currentTrip();
   sheet({
@@ -503,8 +572,8 @@ function tripMenu() {
         if (k === 'shiori') { close(); (await import('./shiori.js')).openShiori(); return; }
         if (k === 'ics') { icsDownload(t.items, t.name); close(); return; }
         if (k === 'social') { close(); (await import('./social.js')).openSocial(); return; }
-        if (k === 'rename') { const n = prompt('旅の名前', t.name); if (n) { t.name = n; store.save(); } }
-        if (k === 'new') newTrip();
+        if (k === 'rename') { close(); const n = await askText({ title: '旅の名前', value: t.name, placeholder: '旅の名前' }); if (n) { t.name = n; store.save(); renderTrip(); } return; }
+        if (k === 'new') { close(); setTimeout(() => newTrip(), 300); return; }
         if (k === 'share') {
           const txt = tripText(t);
           if (navigator.share) { try { await navigator.share({ title: t.name, text: txt }); } catch {} } else copyText(txt);
