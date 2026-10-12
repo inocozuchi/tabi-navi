@@ -5,6 +5,7 @@ import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, pars
 import { currentTrip, ensureTrip, renderTrip, editItem, events } from './trip.js';
 import { parseAny, cleanOcrText, findDate, layoutLines, looksLikeSchedule } from './parse.js';
 import { mergeReadings, pickVersion, findExisting, overwrite, diffs, FIELDS } from './merge.js';
+import { autoFix } from './check.js';
 import { readPdf, isPdf, pdfThumb } from './pdfimport.js';
 import { prepForAI, prepForOCR } from './imageprep.js';
 
@@ -44,13 +45,14 @@ const SYSTEM = `あなたは旅行の予定表をつくるアシスタントで�
 - 乗換案内の結果は、乗り物に乗る区間ごとに1件の予定にする（徒歩の乗り換えは、10分以上の時だけ type=walk の予定にする）。title には列車名・路線名（例「のぞみ 21号」「JR山手線 外回り」）、operator に会社名、platform に「14番線発」のような番線、cost に運賃・特急料金を入れる。
 - 新幹線・特急は type=shinkansen（新幹線）または train。地下鉄は subway、路線バス・高速バスは bus、飛行機は flight、フェリーは ferry、タクシーやレンタカーは taxi。
 - 号車・座席（例「7号車 3番A席」）は seat に「7号車 3A」の形で入れる。指定席・自由席・グリーン車などは notes に入れる。
-- ホテル・旅館・ゲストハウス・カプセルホテルは type=hotel の1件にまとめ、start=チェックイン日時、end=チェックアウト日時。時刻が書かれていなければ チェックイン 15:00、チェックアウト 10:00 とし、notes に「時刻は推定」と書く。部屋タイプやベッドは notes、住所は address、電話番号は phone に入れる。
+- ホテル・旅館・ゲストハウス・カプセルホテルは type=hotel の1件にまとめ、start=チェックイン日時、end=チェックアウト日時。時刻が書かれていなければ、チェックインは「その宿の街に着く移動の到着の30分後（分からなければ 15:00）」、チェックアウトは翌朝 10:00 とし、notes に「時刻は推定」と書く。宿のチェックインを、その宿の街へ向かう移動より前の時刻にしない。部屋タイプやベッドは notes、住所は address、電話番号は phone に入れる。
 - 飛行機は number に便名（例「NH 21」）、from/to に空港名（ターミナルがあれば含める）、seat、confirmation（予約番号・確認番号）を入れる。
 - 日時は必ず「YYYY-MM-DDTHH:MM」。年が書かれていなければ、曜日が書かれていれば曜日が合う年、無ければ今日以降でいちばん近い日付にする。日付が書かれていない画像は、ほかの画像や補足の日付から判断する。分からない項目は空文字。
 - 到着時刻が出発時刻より前なら、到着は翌日（夜行バス・深夜便など）。所要時間が書かれていれば、発着時刻と合っているか確かめる。数字の読み間違い（0と8、1と7、3と8など）に注意し、つじつまが合う方を選ぶ。
 - 予約完了・予約確認・eチケット・予約番号のある画面は reserved=true。検索結果だけの画面は reserved=false。
 - 同じ区間について別の候補（予備ルート）として送られた画像の予定は is_alternate=true にする。1つの経路候補に属する区間には同じ route_group を付ける（主のルートは "main"）。
 - 縦長の画像は「分割した○枚目」として続けて送ることがある。分割の境目で同じ予定が2回写っていたら1件にまとめ、source_image は元の画像の番号にする。
+- 予定は実際に起きる順に並べ、日付を必ず付ける。PDFの表で宿が先に書かれていても、時刻は移動との前後関係から決める。
 - 画像に関係のない広告・おすすめ・アプリのボタンは無視する。重複する予定は1件にまとめる。写っていないことを推測で作らない。`;
 
 let sdkPromise;
@@ -587,9 +589,10 @@ export function review(items, tripName, target, { rawText = '', alternate = fals
         if (host) { host.alternates = [...(host.alternates || []), { id: uid(), name: `予備 ${(host.alternates?.length || 0) + 1}：${legs[0].from || ''}→${legs[legs.length - 1].to || ''}`, legs }]; altN++; }
         else { trip.items.push(...legs); added += legs.length; }
       }
+      const fixed = autoFix(trip);
       store.save(); renderTrip(); haptic();
       const msg = [added && `${added}件を追加`, over && `${over}件を上書き`, altN && `予備ルート${altN}件を追加`].filter(Boolean).join('、');
-      toast(msg ? msg + 'しました' : '変更はありません（同じ予定はそのままにしました）', 3000);
+      toast(msg ? msg + 'しました' + (fixed ? `。推定の時刻を${fixed}件、流れに合わせて直しました` : '') : '変更はありません（同じ予定はそのままにしました）', 3500);
       document.querySelector('#tabbar [data-tab="trip"]')?.click();
     },
     build(body, close) {

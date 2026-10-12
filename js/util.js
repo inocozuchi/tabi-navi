@@ -119,12 +119,30 @@ export const blobs = {
 
 // ===== 画面部品 =====
 let toastTimer;
-export function toast(msg, ms = 2200) {
+export function toast(msg, ms = 2200, action = null) {
   const t = $('#toast');
   t.textContent = msg;
+  t.classList.toggle('has-action', !!action);
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast-act';
+    b.textContent = action.label;
+    b.onclick = (e) => { e.stopPropagation(); t.classList.remove('show'); action.run(); };
+    t.append(b);
+  }
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+  toastTimer = setTimeout(() => t.classList.remove('show'), action ? Math.max(ms, 5000) : ms);
+}
+
+// 旅程を変える操作を「元に戻す」付きで行う
+//  fn の前に旅の中身を写しておき、通知の「元に戻す」で戻す
+export function undoable(trip, label, fn, after) {
+  const before = JSON.stringify({ items: trip.items, name: trip.name, start: trip.start, end: trip.end, ignore: trip.ignore });
+  const r = fn();
+  store.save(); after?.();
+  toast(label, 5000, { label: '元に戻す', run: () => { Object.assign(trip, JSON.parse(before)); store.save(); after?.(); haptic(); toast('元に戻しました'); } });
+  return r;
 }
 export function haptic() { try { navigator.vibrate?.(8); } catch {} }
 

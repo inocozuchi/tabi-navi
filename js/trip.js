@@ -1,5 +1,5 @@
 // 旅程：時系列の一覧・予約チェック・予備ルート・編集
-import { $, $$, esc, uid, store, sheet, page, toast, confirmBox, switchHTML, haptic, I, TYPES, TRANSPORT, needsResv, askText, parseLocal, hm, dayKey, mdw, dur, countdown, yen, copyText, blobs, download, segment, toLocalISO } from './util.js';
+import { $, $$, esc, uid, store, sheet, page, toast, confirmBox, switchHTML, haptic, I, TYPES, TRANSPORT, needsResv, askText, undoable, parseLocal, hm, dayKey, mdw, dur, countdown, yen, copyText, blobs, download, segment, toLocalISO } from './util.js';
 import { openImport, openPaste } from './ai.js';
 import { heroHTML, drawWeather, statusHTML, afterStatus, dayWeather, tickHome, tickStatus } from './home.js';
 import { transitLinks, mapsSearchUrl, spotSearch } from './transit.js';
@@ -7,6 +7,8 @@ import { icsDownload } from './tools.js';
 import { detectGaps, suggestSpotsForGap, autoOptimizeSchedule, getRecommendedTransferTime } from './planner.js';
 import { openShiori } from './shiori.js';
 import { openDocs, viewDoc, docsStripHTML, fillDocThumbs, removeTripDocs } from './docs.js';
+import { checkTrip, shiftAfter, reverseLeg, outboundChain, makeReturn, autoFix } from './check.js';
+import { kmText, minText } from './geo.js';
 
 const el = () => $('#view-trip');
 let filter = 'all';
@@ -96,6 +98,7 @@ export function renderTrip() {
   });
 
   const firstAt = evs.find((e) => e.at)?.at, lastAt = [...evs].reverse().find((e) => e.at)?.at;
+  lastCheck = checkTrip(t);
   const nDays = dayKeys.length;
   const ts = t.start && parseLocal(t.start + 'T00:00'), te = t.end && parseLocal(t.end + 'T00:00');
   let html = `${titleHTML(true)}${heroHTML()}${statusHTML()}
@@ -117,6 +120,7 @@ export function renderTrip() {
       <h2>スケジュール</h2>
       <div class="actions"><button class="text-btn" data-act="addmenu">${I.plus}予定を追加</button></div>
     </div>
+    ${items.length ? checkHTML(lastCheck) : ''}
     <!-- 1日ごとのタイムライン切替タブ -->
     ${dayKeys.length > 1 ? `
     <div class="day-tabs sticky">
@@ -147,20 +151,21 @@ export function renderTrip() {
         <span>${mdw(e.at)}</span>
         <small>${dayIndex(evs, e.at)}・${dayEvs.length}件${dayMoves ? ` (${dayMoves}移動)` : ''}</small>
         <span class="day-wx" data-day="${dk}"></span>
+        <button class="day-more" data-act="daymenu" data-dm="${dk}" aria-label="この日の操作">${I.dots}</button>
       </div>`;
       lastDay = dk; prev = null;
     }
     if (!nowPlaced && e.at > now && dayKey(now) === dk) { html += nowLine(now); nowPlaced = true; }
 
     // 前の予定との間の乗り換え時間または空き時間の表示
-    if (prev && prev.end && e.at > prev.end - 1 && dayKey(prev.end) === dk) {
+    if (prev && prev.end && e.at > prev.end - 1 && dayKey(prev.end) === dk && !lastCheck.slots.has(`${prev.it.id}:${prev.kind}`)) {
       const gapMin = Math.round((e.at - prev.end) / 60000);
       const isBothMove = TRANSPORT.has(prev.it.type) && TRANSPORT.has(e.it.type);
       const recTransfer = getRecommendedTransferTime(prev.it, e.it);
 
       if (isBothMove && gapMin < 180) {
-        // 乗り換え表示
-        const isShort = gapMin < recTransfer;
+        // 乗り換え表示（徒歩の移動そのものが乗り換えの時は、短くても注意しない）
+        const isShort = gapMin < recTransfer && prev.it.type !== 'walk' && e.it.type !== 'walk';
         html += `<div class="gap-note ${isShort ? 'warn' : 'ok'}">
           ${isShort ? I.warn : I.walk} 乗り換え ${gapMin}分${isShort ? `（${recTransfer}分以上を推奨）` : '（余裕あり）'}
         </div>`;
@@ -170,18 +175,19 @@ export function renderTrip() {
         // 短い空き（90分未満）は控えめに1行で、長い空きは「おすすめを探す」を大きく出す
         html += `<div class="gap-slot ${gapMin < 90 ? 'compact' : ''}" data-gap-start="${prev.end.toISOString()}" data-gap-end="${e.at.toISOString()}" data-gap-loc="${esc(loc)}" data-gap-min="${gapMin}">
           <div class="gap-info">${I.clock} <span>空き時間 ${gapMin >= 60 ? `${Math.floor(gapMin / 60)}時間${gapMin % 60 ? (gapMin % 60) + '分' : ''}` : `${gapMin}分`}</span></div>
-          <button class="gap-add-btn" data-act="suggest-spot">${I.sparkles}${gapMin < 90 ? '探す' : 'おすすめを探す'}</button>
+          <span class="gap-btns"><button class="gap-add-btn ghost" data-act="gap-add">${I.plus}予定</button><button class="gap-add-btn" data-act="suggest-spot">${I.sparkles}${gapMin < 90 ? '探す' : 'おすすめ'}</button></span>
         </div>`;
       }
     }
 
     html += evHTML(e, now);
+    for (const sl of lastCheck.slots.get(`${e.it.id}:${e.kind}`) || []) html += slotHTML(sl);
     prev = e;
   }
   html += '</div>';
 
   if (noTime.length && (selectedDay === 'all')) {
-    html += `<div class="section-title">日時が未定</div><div class="tl">${noTime.map((e) => evHTML(e, now)).join('')}</div>`;
+    html += `<div class="section-title">日時が未定</div><div class="tl untimed">${noTime.map((e) => evHTML(e, now)).join('')}</div>`;
   }
   html += `<div class="now-jump-wrap"><button class="now-jump" data-act="nowjump" aria-label="いまの予定へ">${I.clock}<span>いまの予定へ</span></button></div>`;
   el().innerHTML = html;
@@ -217,6 +223,153 @@ function updateNowJump() {
   const off = inTl && !!r && (r.bottom < v.top + 80 || r.top > v.bottom - 140) && $('.tl-item.past', el());
   b.classList.toggle('show', !!off);
   if (r) b.classList.toggle('up', r.bottom < v.top + 80);
+}
+
+// ===== 旅程チェック =====
+let lastCheck = { issues: [], slots: new Map() };
+let checkOpen = false;
+function checkHTML(res) {
+  const n = res.issues.length, w = res.issues.filter((i) => i.level === 'warn').length;
+  if (!n) return `<div class="check-card ok"><span class="ck-badge">${I.check}</span><div class="grow"><b>旅程チェック</b><span>抜けや時間のおかしい所は見つかりませんでした</span></div></div>`;
+  return `<div class="check-card ${w ? 'warn' : 'info'} ${checkOpen ? 'open' : ''}">
+    <button class="ck-head" data-act="check-toggle"><span class="ck-badge">${w ? I.warn : I.info}</span><div class="grow"><b>旅程チェック・${n}件</b><span>${esc(res.issues[0].title)}${n > 1 ? ` ほか${n - 1}件` : ''}</span></div><span class="ck-chev">${I.chev}</span></button>
+    <div class="ck-list">${res.issues.map((x) => `<div class="ck-item ${x.level}">
+      <span class="ck-ico">${I[x.icon] || I.info}</span>
+      <div class="grow"><b>${esc(x.title)}</b><span>${esc(x.detail || '')}</span>
+        <div class="ck-btns">${x.fix ? `<button class="primary" data-act="fix" data-key="${esc(x.key)}">${esc(x.fix.label)}</button>` : ''}${x.slot ? `<button class="primary" data-act="slot-add" data-key="${esc(x.slot.key)}">${I.plus}${x.slot.kind === 'hotel' ? '宿を追加' : '移動を追加'}</button>` : ''}${x.ev ? `<button data-act="jump" data-ev="${esc(x.ev)}">見る</button>` : ''}<button data-act="ignore" data-key="${esc(x.key)}">気にしない</button></div>
+      </div></div>`).join('')}</div>
+  </div>`;
+}
+// タイムラインの中の「抜けています」の入力枠
+function slotHTML(sl) {
+  if (sl.kind === 'hotel') return `<div class="miss-card hotel"><span class="mc-ico">${I.bed}</span><div class="grow"><b>この夜の宿が決まっていません</b><span>${sl.place ? `${esc(sl.place)}の近く・` : ''}${hm(sl.start)}ごろから</span><div class="mc-btns"><button class="mc-add" data-act="slot-add" data-key="${esc(sl.key)}">${I.plus}宿を追加</button><button class="mc-x" data-act="ignore" data-key="${esc(sl.key)}">気にしない</button></div></div></div>`;
+  return `<div class="miss-card"><span class="mc-ico">${I.route}</span><div class="grow"><b>移動が抜けているかも</b><span>${esc(sl.from)} → ${esc(sl.to)}<br>約${kmText(sl.dist)}・${TYPES[sl.type]?.name || ''}で${minText(sl.est)}（目安）</span><div class="mc-btns"><button class="mc-add" data-act="slot-add" data-key="${esc(sl.key)}">${I.plus}移動を追加</button><button class="mc-x" data-act="ignore" data-key="${esc(sl.key)}">気にしない</button></div></div></div>`;
+}
+function slotItem(sl) {
+  if (sl.kind === 'hotel') return { id: uid(), type: 'hotel', title: '', address: sl.place || '', start: toLocalISO(sl.start), end: toLocalISO(sl.end), reserved: false, remind: 30 };
+  const st = new Date(sl.start);
+  return { id: uid(), type: sl.type, title: '', from: sl.from || '', to: sl.to || '', start: toLocalISO(st), end: toLocalISO(new Date(st.getTime() + (sl.est || 60) * 60000)), reserved: false, remind: 30 };
+}
+function findCheck(key) {
+  return lastCheck.issues.find((x) => x.key === key) || [...lastCheck.slots.values()].flat().map((sl) => ({ key: sl.key, slot: sl })).find((x) => x.key === key);
+}
+
+// チェックの「見る」：その予定までスクロールして光らせる
+function jumpTo(evk) {
+  const elx = evk && el().querySelector(`.tl-item[data-ev="${CSS.escape(evk)}"]`);
+  if (!elx) return;
+  elx.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  elx.classList.remove('flash'); void elx.offsetWidth; elx.classList.add('flash');
+}
+
+// ===== 予定ごとの操作（… ボタン） =====
+const addMin = (d, m) => new Date(d.getTime() + m * 60000);
+const shiftItem = (it, min) => { if (it.start) it.start = toLocalISO(addMin(parseLocal(it.start), min)); if (it.end) it.end = toLocalISO(addMin(parseLocal(it.end), min)); };
+function cloneItem(it) { const c = structuredClone(it); c.id = uid(); c.alternates = (c.alternates || []).map((a) => ({ ...a, id: uid() })); c.reserved = false; c.confirmation = ''; return c; }
+function tripDays(trip) {
+  const ks = new Set(events(trip).filter((e) => e.at).map((e) => dayKey(e.at)));
+  if (trip.start) { for (let d = parseLocal(trip.start + 'T00:00'), z = parseLocal((trip.end || trip.start) + 'T00:00'); d <= z; d = addMin(d, 1440)) ks.add(dayKey(d)); }
+  return [...ks].sort();
+}
+// 日付を選ぶシート（旅の日付＋好きな日）
+function pickDay(trip, title, cb) {
+  sheet({
+    title, left: 'キャンセル',
+    build(body, close) {
+      const days = tripDays(trip);
+      body.innerHTML = `<div class="list">${days.map((d, i) => `<button class="row icon-row" data-d="${d}"><span class="ico">${I.clock}</span><div class="grow">${mdw(parseLocal(d + 'T00:00'))}<div class="sub">${i + 1}日目</div></div><span class="chev">${I.chev}</span></button>`).join('')}</div>
+        <div class="section-title">ほかの日</div><div class="list"><div class="row"><div style="flex:none">日付</div><input type="date" id="pd-d"></div></div>
+        <button class="btn" id="pd-go" style="margin-top:12px">この日にする</button>`;
+      $$('[data-d]', body).forEach((b) => b.onclick = () => { close(); cb(b.dataset.d); });
+      $('#pd-go', body).onclick = () => { const v = $('#pd-d', body).value; if (!v) return toast('日付を選んでください'); close(); cb(v); };
+    },
+  });
+}
+const moveToDay = (it, day) => { const s = parseLocal(it.start); if (!s) { it.start = day + 'T09:00'; return; } const diff = Math.round((parseLocal(day + 'T00:00') - parseLocal(dayKey(s) + 'T00:00')) / 60000); shiftItem(it, diff); };
+
+function itemMenu(trip, it) {
+  const isMove = TRANSPORT.has(it.type);
+  const s = parseLocal(it.start);
+  sheet({
+    title: itemTitle(it), left: '閉じる',
+    build(body, close) {
+      body.innerHTML = `
+        <div class="list grouped">
+          <button class="row icon-row" data-k="edit"><span class="ico">${I.edit}</span><div class="grow">編集</div><span class="chev">${I.chev}</span></button>
+          <button class="row icon-row" data-k="dup"><span class="ico">${I.copy}</span><div class="grow">複製<div class="sub">同じ予定をすぐ後ろにもう1つ</div></div></button>
+          ${isMove ? `<button class="row icon-row" data-k="rev"><span class="ico">${I.route}</span><div class="grow">帰りをつくる（逆向きにコピー）<div class="sub">${esc(it.to || '?')} → ${esc(it.from || '?')}・日付を選べます</div></div><span class="chev">${I.chev}</span></button>` : ''}
+          <button class="row icon-row" data-k="copyday"><span class="ico">${I.plus}</span><div class="grow">別の日にコピー</div><span class="chev">${I.chev}</span></button>
+          <button class="row icon-row" data-k="moveday"><span class="ico">${I.clock}</span><div class="grow">別の日に移す</div><span class="chev">${I.chev}</span></button>
+          <button class="row icon-row" data-k="before"><span class="ico">${I.plus}</span><div class="grow">この前に予定を入れる</div></button>
+          <button class="row icon-row" data-k="after"><span class="ico">${I.plus}</span><div class="grow">この後に予定を入れる</div></button>
+        </div>
+        ${s ? `<div class="section-title">時間をずらす</div>
+        <div class="shift-row">${[-60, -30, -10, 10, 30, 60].map((m) => `<button class="chip" data-m="${m}">${m > 0 ? '+' : ''}${m}分</button>`).join('')}</div>
+        <div class="list"><div class="row"><div class="grow">この日のこれより後の予定も一緒に</div>${switchHTML('', true, 'id="im-all"')}</div></div>` : ''}
+        <div class="list grouped" style="margin-top:14px"><button class="row icon-row danger" data-k="del"><span class="ico">${I.trash}</span><div class="grow">この予定を削除</div></button></div>`;
+      const done = (label, fn) => { close(); undoable(trip, label, fn, renderTrip); };
+      $$('[data-k]', body).forEach((b) => b.onclick = async () => {
+        const k = b.dataset.k;
+        if (k === 'edit') { close(); editItem(it); return; }
+        if (k === 'dup') return done('複製しました', () => { const c = cloneItem(it); const dur = s && parseLocal(it.end) ? (parseLocal(it.end) - s) / 60000 : 0; if (s && it.type !== 'hotel') shiftItem(c, Math.max(dur, 30)); trip.items.push(c); });
+        if (k === 'rev') { close(); const last = tripDays(trip).slice(-1)[0]; pickDay(trip, '帰りの日', (d) => { const r = reverseLeg(it); moveToDay(r, d); if (d === last && d !== dayKey(s || new Date())) { /* 最終日の午後に置く */ const st = parseLocal(r.start); if (st && st.getHours() < 12) shiftItem(r, (15 - st.getHours()) * 60); } undoable(trip, `帰り（${r.from} → ${r.to}）をつくりました。時刻を確かめてください`, () => trip.items.push(r), renderTrip); setTimeout(() => editItem(trip.items.find((x) => x.id === r.id)), 400); }); return; }
+        if (k === 'copyday') { close(); pickDay(trip, 'コピーする日', (d) => undoable(trip, `${mdw(parseLocal(d + 'T00:00'))}にコピーしました`, () => { const c = cloneItem(it); moveToDay(c, d); trip.items.push(c); }, renderTrip)); return; }
+        if (k === 'moveday') { close(); pickDay(trip, '移す日', (d) => undoable(trip, `${mdw(parseLocal(d + 'T00:00'))}に移しました`, () => moveToDay(it, d), renderTrip)); return; }
+        if (k === 'before' || k === 'after') {
+          close();
+          const base = k === 'before' ? (s ? addMin(s, -60) : null) : (parseLocal(it.end) || s);
+          editItem({ id: uid(), type: 'activity', title: '', start: base ? toLocalISO(base) : '', end: base ? toLocalISO(addMin(base, 60)) : '', reserved: false, remind: 30, address: k === 'after' ? (isMove ? it.to : it.address || it.title || '') : (isMove ? it.from : it.address || '') });
+          return;
+        }
+        if (k === 'del') { close(); undoable(trip, '削除しました', () => { trip.items = trip.items.filter((x) => x.id !== it.id); }, renderTrip); }
+      });
+      $$('[data-m]', body).forEach((b) => b.onclick = () => {
+        const m = +b.dataset.m, all = $('#im-all', body)?.checked;
+        done(`${m > 0 ? '+' : ''}${m}分ずらしました${all ? '（後ろの予定も）' : ''}`, () => { if (all) shiftAfter(trip, it, m, true); else shiftItem(it, m); });
+      });
+    },
+  });
+}
+
+// ===== 1日ごとの操作 =====
+function dayMenu(trip, day) {
+  const its = () => trip.items.filter((x) => x.start && dayKey(parseLocal(x.start)) === day);
+  const d0 = parseLocal(day + 'T00:00');
+  sheet({
+    title: `${mdw(d0)}の予定`, left: '閉じる',
+    build(body, close) {
+      body.innerHTML = `
+        <div class="list grouped">
+          <button class="row icon-row" data-k="add"><span class="ico">${I.plus}</span><div class="grow">この日に予定を追加</div></button>
+          <button class="row icon-row" data-k="copy"><span class="ico">${I.copy}</span><div class="grow">この日をまるごと別の日にコピー<div class="sub">${its().length}件（宿は除く）</div></div><span class="chev">${I.chev}</span></button>
+          <button class="row icon-row" data-k="move"><span class="ico">${I.clock}</span><div class="grow">この日をまるごと別の日に移す</div><span class="chev">${I.chev}</span></button>
+        </div>
+        <div class="section-title">この日の予定をまとめてずらす</div>
+        <div class="shift-row">${[-60, -30, -15, 15, 30, 60].map((m) => `<button class="chip" data-m="${m}">${m > 0 ? '+' : ''}${m}分</button>`).join('')}</div>
+        <div class="list grouped" style="margin-top:14px"><button class="row icon-row danger" data-k="del"><span class="ico">${I.trash}</span><div class="grow">この日の予定をすべて削除</div></button></div>`;
+      const done = (label, fn) => { close(); undoable(trip, label, fn, renderTrip); };
+      $('[data-k="add"]', body).onclick = () => { close(); editItem({ id: uid(), type: 'activity', title: '', start: day + 'T10:00', end: day + 'T11:00', reserved: false, remind: 30 }); };
+      $('[data-k="copy"]', body).onclick = () => { close(); pickDay(trip, 'コピーする日', (d) => undoable(trip, `${mdw(parseLocal(d + 'T00:00'))}にコピーしました`, () => { for (const x of its().filter((x) => x.type !== 'hotel')) { const c = cloneItem(x); moveToDay(c, d); trip.items.push(c); } }, renderTrip)); };
+      $('[data-k="move"]', body).onclick = () => { close(); pickDay(trip, '移す日', (d) => undoable(trip, `${mdw(parseLocal(d + 'T00:00'))}に移しました`, () => { for (const x of its()) moveToDay(x, d); }, renderTrip)); };
+      $$('[data-m]', body).forEach((b) => b.onclick = () => { const m = +b.dataset.m; done(`この日の予定を${m > 0 ? '+' : ''}${m}分ずらしました`, () => its().forEach((x) => shiftItem(x, m))); });
+      $('[data-k="del"]', body).onclick = async () => { if (!(await confirmBox(`${mdw(d0)}の予定をすべて削除しますか？`, `${its().length}件`, '削除', { destructive: true }))) return; done('削除しました', () => { const ids = new Set(its().map((x) => x.id)); trip.items = trip.items.filter((x) => !ids.has(x.id)); }); };
+    },
+  });
+}
+
+// 旅をまるごと別の日程へ（延期・前倒しの時）
+function shiftTrip(trip) {
+  const first = events(trip).find((e) => e.at)?.at || (trip.start && parseLocal(trip.start + 'T00:00'));
+  if (!first) { toast('日付のある予定がありません'); return; }
+  pickDay(trip, '新しい1日目', (d) => {
+    const diff = Math.round((parseLocal(d + 'T00:00') - parseLocal(dayKey(first) + 'T00:00')) / 60000);
+    if (!diff) return;
+    const sh = (iso) => (iso && iso.length === 10 ? dayKey(addMin(parseLocal(iso + 'T00:00'), diff)) : iso);
+    undoable(trip, `旅をまるごと${diff > 0 ? Math.round(diff / 1440) + '日後' : Math.round(-diff / 1440) + '日前'}にずらしました`, () => {
+      for (const x of trip.items) { shiftItem(x, diff); for (const a of x.alternates || []) for (const l of a.legs || []) shiftItem(l, diff); }
+      trip.start = sh(trip.start); trip.end = sh(trip.end);
+    }, renderTrip);
+  });
 }
 
 // いちばん上：日付と大きな見出し（iOS の大きいタイトル）
@@ -309,7 +462,7 @@ function evHTML(e, now) {
   const addr = it.address && it.address !== it.title && !title.includes(it.address) ? it.address : '';
   const sub = e.kind === 'out' ? '' : (e.end && +e.end !== +e.at && it.type !== 'hotel') ? `<small>〜${hm(e.end)}</small>` : '';
   const isMove = TRANSPORT.has(it.type);
-  return `<div class="tl-item ${past ? 'past' : ''} ${cur ? 'current' : ''}" style="--c:${T.color}" data-id="${it.id}">
+  return `<div class="tl-item ${past ? 'past' : ''} ${cur ? 'current' : ''}" style="--c:${T.color}" data-id="${it.id}" data-ev="${it.id}:${e.kind}">
     <div class="time">${e.at ? hm(e.at) : '--:--'}${sub}</div><div class="line"></div><div class="dot"></div>
     <div class="ev" data-act="open">
       <div class="top"><div class="type-ico">${I[T.icon]}</div><div class="title">${esc(title)}</div>${resv}</div>
@@ -319,10 +472,11 @@ function evHTML(e, now) {
       ${it.notes && e.kind !== 'out' ? `<div class="ev-notes" data-act="more">${esc(it.notes)}</div>` : ''}
       ${it.alternates?.length && e.kind !== 'out' ? `<div class="alt-box"><div class="alt-title">${I.route} 予備ルート ${it.alternates.length}件</div>${it.alternates.map((r) => `<div style="margin-bottom:6px"><div class="hstack"><b class="small">${esc(r.name || '予備')}</b><span class="spacer"></span><button class="link-btn small" data-act="swap" data-alt="${r.id}">このルートに切替</button></div>${r.legs.map((l) => `<div class="alt-leg"><span class="lt">${hm(parseLocal(l.start))}${l.end ? '→' + hm(parseLocal(l.end)) : ''}</span><span style="color:${(TYPES[l.type] || TYPES.other).color}">${I[(TYPES[l.type] || TYPES.other).icon]}</span><span class="small">${esc(l.title || '')} ${esc(l.from || '')}${l.to ? '→' + esc(l.to) : ''}</span></div>`).join('')}</div>`).join('')}</div>` : ''}
       ${e.kind !== 'out' ? `<div class="acts">
-        ${isMove && it.from && it.to ? `<button data-act="transit">${I.route}乗換案内</button>` : ''}
+        ${isMove && it.from && it.to && it.type !== 'walk' ? `<button data-act="transit">${I.route}乗換案内</button>` : ''}
         ${it.type === 'flight' && it.number ? `<a href="https://www.google.com/search?q=${encodeURIComponent(it.number.replace(/\s/g, '') + ' 運航状況')}" target="_blank" rel="noopener">${I.plane}運航状況</a>` : ''}
         ${(it.address || it.to || it.title) ? `<a href="${mapsSearchUrl(it.type === 'hotel' || !isMove ? (it.address || it.title) : it.to)}" target="_blank" rel="noopener">${I.pin}地図</a>` : ''}
         ${it.imgs?.length ? `<button data-act="imgs">${I.photo}スクショ</button>` : ''}
+        <button class="more" data-act="itemmenu" aria-label="この予定の操作">${I.dots}</button>
       </div>` : ''}
     </div></div>`;
 }
@@ -332,7 +486,107 @@ export function tickTrip() {
   tickStatus();
 }
 
+// ===== 長押しでつかんで並べ替え =====
+//  0.4秒押したままにすると予定が浮き上がる。上下に動かして離すと、前後の予定に合わせて時刻が変わる（長さはそのまま）
+let justDragged = false;
+function enableDrag() {
+  const root = el();
+  let st = null, drag = null, timer = 0, raf = 0;
+  const cards = () => [...root.querySelectorAll('.tl:not(.untimed) > .tl-item[data-ev]')];
+  const evMap = () => { const m = new Map(); for (const e of events(currentTrip())) m.set(`${e.it.id}:${e.kind}`, e); return m; };
+  const cancel = () => { clearTimeout(timer); timer = 0; st = null; };
+  function begin() {
+    const card = st.card;
+    const r = card.getBoundingClientRect();
+    const ghost = card.cloneNode(true);
+    ghost.classList.add('drag-ghost');
+    Object.assign(ghost.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px' });
+    document.body.append(ghost);
+    const line = document.createElement('div');
+    line.className = 'drop-line';
+    document.body.append(line);
+    card.classList.add('drag-src');
+    drag = { card, ghost, line, offY: st.y - r.top, y: st.y, map: evMap(), target: null };
+    haptic(); navigator.vibrate?.(15);
+    tick();
+  }
+  // 端に近い時は自動でスクロール
+  function tick() {
+    if (!drag) return;
+    const v = root.getBoundingClientRect();
+    if (drag.y < v.top + 110) root.scrollTop -= Math.ceil((v.top + 110 - drag.y) / 8);
+    else if (drag.y > v.bottom - 140) root.scrollTop += Math.ceil((drag.y - (v.bottom - 140)) / 8);
+    place();
+    raf = requestAnimationFrame(tick);
+  }
+  // 落とす場所（前の予定・次の予定）と、新しい時刻
+  function place() {
+    const list = cards().filter((c) => c !== drag.card);
+    if (!list.length) return;
+    let idx = list.findIndex((c) => { const r = c.getBoundingClientRect(); return drag.y < r.top + r.height / 2; });
+    if (idx < 0) idx = list.length;
+    let prevEl = list[idx - 1] || null, nextEl = list[idx] || null;
+    // 日の見出しをまたぐ所では、指が見出しより上なら前の日の最後、下なら次の日のはじめ
+    if (prevEl && nextEl) {
+      const pe = drag.map.get(prevEl.dataset.ev), ne = drag.map.get(nextEl.dataset.ev);
+      if (pe && ne && dayKey(pe.at) !== dayKey(ne.at)) {
+        let h = nextEl.previousElementSibling; while (h && !h.classList.contains('day-head')) h = h.previousElementSibling;
+        if (h) { if (drag.y < h.getBoundingClientRect().bottom) nextEl = null; else prevEl = null; }
+      }
+    }
+    const m = drag.map.get(drag.card.dataset.ev);
+    const p = prevEl && drag.map.get(prevEl.dataset.ev), n = nextEl && drag.map.get(nextEl.dataset.ev);
+    const dur = m.kind === '' && m.end ? m.end - m.at : 0;
+    let at = null;
+    if (p) at = new Date((p.end || p.at).getTime());
+    else if (n) at = new Date(n.at.getTime() - (dur || 30 * 60000));
+    if (at) at.setMinutes(Math.round(at.getMinutes() / 5) * 5, 0, 0);
+    drag.target = { at, m };
+    const ref = (nextEl || prevEl).getBoundingClientRect();
+    const y = nextEl ? ref.top - 6 : ref.bottom + 4;
+    Object.assign(drag.line.style, { top: y + 'px', left: (ref.left + 56) + 'px', width: (ref.width - 56) + 'px' });
+    drag.ghost.style.top = (drag.y - drag.offY) + 'px';
+    const tEl = drag.ghost.querySelector('.time');
+    if (tEl && at) tEl.innerHTML = `${hm(at)}<small>${dur ? '〜' + hm(new Date(at.getTime() + dur)) : ''}</small>`;
+  }
+  function drop() {
+    cancelAnimationFrame(raf);
+    const { ghost, line, card, target } = drag;
+    ghost.remove(); line.remove(); card.classList.remove('drag-src');
+    drag = null; justDragged = true; setTimeout(() => { justDragged = false; }, 350);
+    if (!target?.at || !target.m) return;
+    const { m, at } = target, it = m.it, trip = currentTrip();
+    if (Math.abs(at - m.at) < 60000) return;
+    undoable(trip, `${mdw(at)} ${hm(at)} に移しました`, () => {
+      const diff = at - m.at;
+      if (m.kind === '') { it.start = toLocalISO(at); if (it.end) it.end = toLocalISO(new Date(parseLocal(it.end).getTime() + diff)); }
+      else if (m.kind === 'in') it.start = toLocalISO(at);
+      else if (m.kind === 'out') it.end = toLocalISO(at);
+    }, renderTrip);
+  }
+  root.addEventListener('pointerdown', (e) => {
+    const card = e.target.closest('.tl:not(.untimed) > .tl-item[data-ev]');
+    if (!card || e.target.closest('button, a, input, select, textarea') || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    st = { x: e.clientX, y: e.clientY, card };
+    timer = setTimeout(() => { timer = 0; if (st) begin(); }, 420);
+  });
+  // 指がタイムラインの外（下のタブなど）に出ても追いかけるよう、画面全体で受ける
+  document.addEventListener('pointermove', (e) => {
+    if (drag) { drag.y = e.clientY; place(); return; }
+    if (st && Math.hypot(e.clientX - st.x, e.clientY - st.y) > 8) cancel();
+  });
+  const end = () => { if (drag) drop(); cancel(); };
+  document.addEventListener('pointerup', end);
+  document.addEventListener('pointercancel', end);
+  // つかんでいる間は画面がスクロールしないように
+  document.addEventListener('touchmove', (e) => { if (drag) e.preventDefault(); }, { passive: false });
+  root.addEventListener('contextmenu', (e) => { if (e.target.closest('.tl-item')) e.preventDefault(); });
+  // つかんだ後の「タップ」で編集が開かないように
+  root.addEventListener('click', (e) => { if (justDragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+}
+
 export function bindTrip() {
+  enableDrag();
   let raf = 0;
   el().addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; updateNowJump(); parallax(); }); }, { passive: true });
   el().addEventListener('change', (e) => {
@@ -366,6 +620,30 @@ export function bindTrip() {
       }
       case 'import': openImport({}); break;
       case 'trips': tripSwitcher(); break;
+      case 'check-toggle': checkOpen = !checkOpen; haptic(); t.closest('.check-card')?.classList.toggle('open', checkOpen); break;
+      case 'fix': {
+        const x = findCheck(t.dataset.key);
+        if (x?.fix) undoable(trip, `直しました：${x.fix.label}`, () => x.fix.run(), renderTrip);
+        break;
+      }
+      case 'ignore': {
+        const k = t.dataset.key;
+        undoable(trip, '気にしないことにしました', () => { trip.ignore = [...new Set([...(trip.ignore || []), k])]; }, renderTrip);
+        break;
+      }
+      case 'slot-add': {
+        const x = findCheck(t.dataset.key);
+        if (x?.slot) editItem(slotItem(x.slot));
+        break;
+      }
+      case 'jump': jumpTo(t.dataset.ev); break;
+      case 'itemmenu': if (it) itemMenu(trip, it); break;
+      case 'daymenu': if (trip) dayMenu(trip, t.dataset.dm); break;
+      case 'gap-add': {
+        const g = t.closest('.gap-slot');
+        if (g) editItem({ id: uid(), type: 'activity', title: '', start: toLocalISO(new Date(g.dataset.gapStart)), end: toLocalISO(new Date(Math.min(+new Date(g.dataset.gapEnd), +new Date(g.dataset.gapStart) + 3600e3))), address: g.dataset.gapLoc || '', reserved: false, remind: 30 });
+        break;
+      }
       case 'newtrip': newTrip(); break;
       case 'docs': openDocs(); break;
       case 'doc': if (trip) viewDoc(trip, (trip.docs || []).find((x) => x.id === t.dataset.doc), () => renderTrip()); break;
@@ -578,6 +856,8 @@ function tripMenu() {
       body.innerHTML = `<div class="list">
         <button class="row" data-k="rename">${I.edit}<div class="grow">名前を変える</div></button>
         <button class="row" data-k="new">${I.plus}<div class="grow">新しい旅をつくる</div></button>
+        <button class="row" data-k="fixall">${I.check}<div class="grow">推定の時刻を流れに合わせて直す</div></button>
+        <button class="row" data-k="shift">${I.clock}<div class="grow">旅をまるごと別の日程にずらす</div></button>
         <button class="row" data-k="docs">${I.folder}<div class="grow">旅の資料（時刻表・チケットの写真やPDF）</div></button>
         <button class="row" data-k="shiori">${I.note}<div class="grow">旅のしおりをつくる（印刷・PDF）</div></button>
         <button class="row" data-k="ics">${I.clock}<div class="grow">全部の予定をカレンダーに登録</div></button>
@@ -591,6 +871,8 @@ function tripMenu() {
       $$('[data-k]', body).forEach((b) => b.onclick = async () => {
         const k = b.dataset.k;
         if (k === 'docs') { close(); setTimeout(openDocs, 250); return; }
+        if (k === 'shift') { close(); setTimeout(() => shiftTrip(t), 250); return; }
+        if (k === 'fixall') { close(); let n = 0; undoable(t, '推定の時刻を直しました', () => { n = autoFix(t); }, renderTrip); if (!n) toast('直す所はありませんでした'); return; }
         if (k === 'shiori') { close(); (await import('./shiori.js')).openShiori(); return; }
         if (k === 'ics') { icsDownload(t.items, t.name); close(); return; }
         if (k === 'social') { close(); (await import('./social.js')).openSocial(); return; }
