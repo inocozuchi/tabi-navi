@@ -916,3 +916,62 @@ button.row:active, label.row:active, .row.tappable:active { background: var(--fi
 
 .day-more { margin-left: auto; width: 32px; height: 28px; border-radius: 14px; display: grid; place-items: center; color: var(--label2); font-size: 18px; }
 .day-more:active { background: var(--fill); }
+
+/* ===== 並べ替え（iOS のリストの動き） ===== */
+.tl-item .ev { transition: transform .3s cubic-bezier(.2,.9,.25,1); }
+.tl-item.pressing .ev { transform: scale(.97); }
+.tl-item.drag-src { display: none; }
+.drag-ghost { position: fixed; z-index: 300; pointer-events: none; margin: 0; filter: none; transform-origin: 50% 40%; transition: box-shadow .25s ease; will-change: transform; animation: none !important; border-radius: 16px; }
+.drag-ghost.lifted { box-shadow: 0 24px 48px rgba(0,0,0,.22), 0 8px 16px rgba(0,0,0,.12); }
+.drag-ghost.settle { transition: transform .26s cubic-bezier(.2,.9,.25,1), box-shadow .26s ease; box-shadow: var(--shadow); }
+.drag-ghost .acts { opacity: .5; }
+.drag-time { position: absolute; top: -13px; right: 14px; height: 24px; line-height: 24px; padding: 0 10px; border-radius: 12px; background: var(--blue); color: #fff; font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; box-shadow: 0 4px 12px color-mix(in srgb, var(--blue) 40%, transparent); white-space: nowrap; transition: background .2s; }
+.drag-time:empty { display: none; }
+.drag-time.same { background: var(--gray); box-shadow: none; }
+.drop-ph { position: relative; margin-bottom: 10px; animation: none; }
+.drop-ph .ph-box { height: 100%; border-radius: 16px; border: 2px dashed color-mix(in srgb, var(--blue) 50%, transparent); background: color-mix(in srgb, var(--blue) 7%, transparent); }
+.drop-ph .ph-time { position: absolute; left: -68px; top: 11px; width: 50px; text-align: right; font-weight: 700; font-size: 15px; color: var(--blue); font-variant-numeric: tabular-nums; }
+.dragging .tl > :not(.tl-item) { opacity: .3; transition: opacity .2s; }
+.dragging .tl > .day-head { opacity: 1; }
+.dragging .tl-item:not(.drop-ph) .ev { box-shadow: none; }
+.tl-item.dropped .ev { animation: dropped .9s ease; }
+@keyframes dropped { 0% { transform: scale(1.025); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 60%, transparent); } 100% { transform: none; box-shadow: var(--shadow); } }
+.drop-line { display: none; }
+
+/* ===== iOS のような重なりの動き ===== */
+/* シートを開くと、うしろの画面が少し小さく奥へ下がる */
+#app { transition: transform .45s cubic-bezier(.2,.9,.25,1), border-radius .45s, filter .45s; transform-origin: 50% 100%; }
+body.sheet-open { background: #000; }
+body.sheet-open #app { transform: translateY(calc(var(--sat) * .5 + 8px)) scale(.92); border-radius: 14px; overflow: hidden; filter: brightness(.92); }
+/* ページを開くと、うしろの画面が少し左へずれる（押し出し） */
+body.page-open #app { transform: translateX(-28%); filter: brightness(.88); }
+.backdrop { background: rgba(0,0,0,.28); }
+body.sheet-open .backdrop { background: rgba(0,0,0,.2); }
+.sheet { transition: transform .45s cubic-bezier(.2,.9,.25,1); }
+.page { transition: transform .45s cubic-bezier(.2,.9,.25,1); }
+
+/* 1分ごとの描き直しでは、カードを動かし直さない */
+.view.settled .tl-item, .view.settled .card, .view.settled .trip-card, .view.settled .check-card, .view.settled .miss-card, .view.settled .tile, .view.settled .tile-s, .view.settled .hero, .view.settled .empty-card, .view.settled .start-card { animation: none; }
+/* 並べ替え中は、抜けの枠などを薄く（アニメーションの固定を外す） */
+.dragging .tl > :not(.tl-item):not(.day-head) { animation: none; opacity: .3; }
+
+/* 横になぞって出る「複製」「削除」 */
+.tl-item { touch-action: pan-y; }
+.tl-item .ev { position: relative; z-index: 1; }
+.swipe-acts { position: absolute; top: 0; bottom: 0; right: 0; width: 150px; display: flex; gap: 6px; padding: 4px 0 4px 8px; z-index: 0; opacity: 0; transition: opacity .2s; }
+.tl-item.swiped .swipe-acts, .tl-item .ev[style*="translateX"] ~ .swipe-acts { opacity: 1; }
+.swipe-acts { opacity: 1; }
+.swipe-acts button { flex: 1; border-radius: 14px; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 12.5px; font-weight: 700; }
+.swipe-acts button svg { width: 20px; height: 20px; stroke-width: 2.2; }
+.sw-dup { background: var(--blue); }
+.sw-del { background: var(--red); }
+.tl-item:not(.swiped) .ev:not([style*="translateX"]) ~ .swipe-acts { visibility: hidden; }
+.tl-item .swipe-acts { visibility: hidden; }
+.tl-item.swiped .swipe-acts, .tl-item.swiping .swipe-acts { visibility: visible; }
+
+/* 押した時の手ざわり */
+button.row:active, label.row:active { transition: none; }
+.tile-s:active .tile-ico, .tile:active .tile-ico { filter: brightness(.9); }
+.icon-btn:active, .pill-btn:active, .tc-new:active, .mc-add:active, .text-btn:active { transform: scale(.92); }
+.chip, .day-tab { transition: background .2s, color .2s, transform .15s, box-shadow .2s; }
+.list .row.warn, .list .row.warn .ico { color: var(--orange); }

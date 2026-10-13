@@ -191,6 +191,8 @@ export function renderTrip() {
   }
   html += `<div class="now-jump-wrap"><button class="now-jump" data-act="nowjump" aria-label="いまの予定へ">${I.clock}<span>いまの予定へ</span></button></div>`;
   el().innerHTML = html;
+  // 1分ごとの描き直しで、カードが毎回ふわっと出直さないように（最初の1回だけ動かす）
+  if (!el().classList.contains('settled')) setTimeout(() => el().classList.add('settled'), 900);
   drawWeather();
   afterStatus();
   dayWeather(t);
@@ -287,6 +289,18 @@ function pickDay(trip, title, cb) {
 }
 const moveToDay = (it, day) => { const s = parseLocal(it.start); if (!s) { it.start = day + 'T09:00'; return; } const diff = Math.round((parseLocal(day + 'T00:00') - parseLocal(dayKey(s) + 'T00:00')) / 60000); shiftItem(it, diff); };
 
+// 複製：同じ予定をすぐ後ろに（宿は同じ日程のまま）
+function dupItem(trip, it) {
+  const s = parseLocal(it.start), c = cloneItem(it);
+  const dur = s && parseLocal(it.end) ? (parseLocal(it.end) - s) / 60000 : 0;
+  if (s && it.type !== 'hotel') shiftItem(c, Math.max(dur, 30));
+  trip.items.push(c);
+  return c;
+}
+function closeSwipes(except) {
+  for (const x of el().querySelectorAll('.tl-item.swiped')) if (x !== except) { x.classList.remove('swiped'); x.querySelector('.ev').style.transform = ''; }
+}
+
 function itemMenu(trip, it) {
   const isMove = TRANSPORT.has(it.type);
   const s = parseLocal(it.start);
@@ -311,7 +325,7 @@ function itemMenu(trip, it) {
       $$('[data-k]', body).forEach((b) => b.onclick = async () => {
         const k = b.dataset.k;
         if (k === 'edit') { close(); editItem(it); return; }
-        if (k === 'dup') return done('複製しました', () => { const c = cloneItem(it); const dur = s && parseLocal(it.end) ? (parseLocal(it.end) - s) / 60000 : 0; if (s && it.type !== 'hotel') shiftItem(c, Math.max(dur, 30)); trip.items.push(c); });
+        if (k === 'dup') return done('複製しました', () => dupItem(trip, it));
         if (k === 'rev') { close(); const last = tripDays(trip).slice(-1)[0]; pickDay(trip, '帰りの日', (d) => { const r = reverseLeg(it); moveToDay(r, d); if (d === last && d !== dayKey(s || new Date())) { /* 最終日の午後に置く */ const st = parseLocal(r.start); if (st && st.getHours() < 12) shiftItem(r, (15 - st.getHours()) * 60); } undoable(trip, `帰り（${r.from} → ${r.to}）をつくりました。時刻を確かめてください`, () => trip.items.push(r), renderTrip); setTimeout(() => editItem(trip.items.find((x) => x.id === r.id)), 400); }); return; }
         if (k === 'copyday') { close(); pickDay(trip, 'コピーする日', (d) => undoable(trip, `${mdw(parseLocal(d + 'T00:00'))}にコピーしました`, () => { const c = cloneItem(it); moveToDay(c, d); trip.items.push(c); }, renderTrip)); return; }
         if (k === 'moveday') { close(); pickDay(trip, '移す日', (d) => undoable(trip, `${mdw(parseLocal(d + 'T00:00'))}に移しました`, () => moveToDay(it, d), renderTrip)); return; }
@@ -464,6 +478,7 @@ function evHTML(e, now) {
   const isMove = TRANSPORT.has(it.type);
   return `<div class="tl-item ${past ? 'past' : ''} ${cur ? 'current' : ''}" style="--c:${T.color}" data-id="${it.id}" data-ev="${it.id}:${e.kind}">
     <div class="time">${e.at ? hm(e.at) : '--:--'}${sub}</div><div class="line"></div><div class="dot"></div>
+    ${e.kind !== 'out' ? `<div class="swipe-acts"><button class="sw-dup" data-act="sw-dup">${I.copy}<span>複製</span></button><button class="sw-del" data-act="sw-del">${I.trash}<span>削除</span></button></div>` : ''}
     <div class="ev" data-act="open">
       <div class="top"><div class="type-ico">${I[T.icon]}</div><div class="title">${esc(title)}</div>${resv}</div>
       ${isMove && (it.from || it.to) ? `<div class="route"><span>${esc(it.from || '?')}</span><span class="arrow">→</span><span>${esc(it.to || '?')}</span>${e.end && e.at && it.type !== 'hotel' ? `<span class="muted small" style="margin-left:auto">${dur(e.end - e.at)}</span>` : ''}</div>` : ''}
@@ -486,53 +501,93 @@ export function tickTrip() {
   tickStatus();
 }
 
-// ===== 長押しでつかんで並べ替え =====
-//  0.4秒押したままにすると予定が浮き上がる。上下に動かして離すと、前後の予定に合わせて時刻が変わる（長さはそのまま）
+// ===== 長押しでつかんで並べ替え（iOS のリストと同じ動き） =====
+//  ・押したままにすると少し沈んでから浮き上がり、指についてくる
+//  ・落とす場所には空きができ、ほかの予定がなめらかに上下へよける
+//  ・離すと空きへ吸い込まれるように収まり、前後の予定に合わせて時刻が変わる（長さはそのまま）
 let justDragged = false;
 function enableDrag() {
   const root = el();
   let st = null, drag = null, timer = 0, raf = 0;
-  const cards = () => [...root.querySelectorAll('.tl:not(.untimed) > .tl-item[data-ev]')];
+  const SEL = '.tl:not(.untimed) > .tl-item[data-ev]';
   const evMap = () => { const m = new Map(); for (const e of events(currentTrip())) m.set(`${e.it.id}:${e.kind}`, e); return m; };
-  const cancel = () => { clearTimeout(timer); timer = 0; st = null; };
+  const cancel = () => { clearTimeout(timer); timer = 0; st?.card.classList.remove('pressing'); st = null; };
+
+  // 並び替えの前後で位置を覚えて、動いた分をなめらかにつなぐ（FLIP）
+  function flip(change) {
+    const tl = drag.card.parentElement;
+    const kids = [...tl.children].filter((k) => k !== drag.ph);
+    const before = new Map(kids.map((k) => [k, k.getBoundingClientRect().top]));
+    change();
+    for (const k of kids) {
+      const dy = before.get(k) - k.getBoundingClientRect().top;
+      if (!dy) continue;
+      k.style.transition = 'none';
+      k.style.transform = `translateY(${dy}px)`;
+      requestAnimationFrame(() => { k.style.transition = 'transform .32s cubic-bezier(.2,.9,.25,1)'; k.style.transform = ''; });
+    }
+  }
   function begin() {
-    const card = st.card;
-    const r = card.getBoundingClientRect();
-    const ghost = card.cloneNode(true);
+    const card = st.card, ev = card.querySelector('.ev');
+    card.classList.remove('pressing');
+    const r = card.getBoundingClientRect(), er = ev.getBoundingClientRect();
+    // 指についてくるのはカード部分だけ
+    const ghost = ev.cloneNode(true);
     ghost.classList.add('drag-ghost');
-    Object.assign(ghost.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px' });
+    ghost.style.setProperty('--c', getComputedStyle(card).getPropertyValue('--c'));
+    Object.assign(ghost.style, { left: er.left + 'px', top: er.top + 'px', width: er.width + 'px' });
+    const badge = document.createElement('div');
+    badge.className = 'drag-time';
+    ghost.append(badge);
     document.body.append(ghost);
-    const line = document.createElement('div');
-    line.className = 'drop-line';
-    document.body.append(line);
+    // 元の場所に、同じ高さの空き（落とす先の印）を置く
+    const ph = document.createElement('div');
+    ph.className = 'tl-item drop-ph';
+    ph.style.height = r.height + 'px';
+    ph.innerHTML = '<div class="ph-time"></div><div class="ph-box"></div>';
+    card.after(ph);
     card.classList.add('drag-src');
-    drag = { card, ghost, line, offY: st.y - r.top, y: st.y, map: evMap(), target: null };
-    haptic(); navigator.vibrate?.(15);
+    root.classList.add('dragging');
+    drag = { card, ghost, ph, badge, offY: st.y - er.top, offX: st.x - er.left, x: st.x, y: st.y, map: evMap(), target: null, key: '' };
+    navigator.vibrate?.(12); haptic();
+    requestAnimationFrame(() => ghost.classList.add('lifted'));
     tick();
   }
-  // 端に近い時は自動でスクロール
+  // 指を追う・端に近い時は自動でスクロール
   function tick() {
     if (!drag) return;
     const v = root.getBoundingClientRect();
-    if (drag.y < v.top + 110) root.scrollTop -= Math.ceil((v.top + 110 - drag.y) / 8);
-    else if (drag.y > v.bottom - 140) root.scrollTop += Math.ceil((drag.y - (v.bottom - 140)) / 8);
+    const sp = drag.y < v.top + 120 ? -Math.ceil((v.top + 120 - drag.y) / 7) : drag.y > v.bottom - 150 ? Math.ceil((drag.y - (v.bottom - 150)) / 7) : 0;
+    if (sp) root.scrollTop += sp;
+    drag.ghost.style.transform = `translate3d(${(drag.x - drag.offX) - parseFloat(drag.ghost.style.left)}px, ${(drag.y - drag.offY) - parseFloat(drag.ghost.style.top)}px, 0) scale(1.035)`;
     place();
     raf = requestAnimationFrame(tick);
   }
-  // 落とす場所（前の予定・次の予定）と、新しい時刻
+  // 落とす場所（前の予定・次の予定）を決め、空きを動かして、新しい時刻を出す
   function place() {
-    const list = cards().filter((c) => c !== drag.card);
+    const list = [...root.querySelectorAll(SEL)].filter((c) => c !== drag.card);
     if (!list.length) return;
     let idx = list.findIndex((c) => { const r = c.getBoundingClientRect(); return drag.y < r.top + r.height / 2; });
     if (idx < 0) idx = list.length;
     let prevEl = list[idx - 1] || null, nextEl = list[idx] || null;
-    // 日の見出しをまたぐ所では、指が見出しより上なら前の日の最後、下なら次の日のはじめ
+    let dayHead = null;
     if (prevEl && nextEl) {
       const pe = drag.map.get(prevEl.dataset.ev), ne = drag.map.get(nextEl.dataset.ev);
       if (pe && ne && dayKey(pe.at) !== dayKey(ne.at)) {
         let h = nextEl.previousElementSibling; while (h && !h.classList.contains('day-head')) h = h.previousElementSibling;
-        if (h) { if (drag.y < h.getBoundingClientRect().bottom) nextEl = null; else prevEl = null; }
+        dayHead = h;
+        if (h) { if (drag.y < h.getBoundingClientRect().top + h.offsetHeight / 2) nextEl = null; else prevEl = null; }
       }
+    }
+    const key = `${prevEl?.dataset.ev || ''}|${nextEl?.dataset.ev || ''}`;
+    if (key !== drag.key) {
+      drag.key = key;
+      flip(() => {
+        if (nextEl && (prevEl || !dayHead)) nextEl.before(drag.ph);
+        else if (nextEl) nextEl.before(drag.ph);
+        else if (prevEl) { let n = prevEl.nextElementSibling; while (n && !n.classList.contains('day-head') && !n.matches(SEL)) n = n.nextElementSibling; n ? n.before(drag.ph) : prevEl.parentElement.append(drag.ph); }
+      });
+      navigator.vibrate?.(4);
     }
     const m = drag.map.get(drag.card.dataset.ev);
     const p = prevEl && drag.map.get(prevEl.dataset.ev), n = nextEl && drag.map.get(nextEl.dataset.ev);
@@ -542,47 +597,93 @@ function enableDrag() {
     else if (n) at = new Date(n.at.getTime() - (dur || 30 * 60000));
     if (at) at.setMinutes(Math.round(at.getMinutes() / 5) * 5, 0, 0);
     drag.target = { at, m };
-    const ref = (nextEl || prevEl).getBoundingClientRect();
-    const y = nextEl ? ref.top - 6 : ref.bottom + 4;
-    Object.assign(drag.line.style, { top: y + 'px', left: (ref.left + 56) + 'px', width: (ref.width - 56) + 'px' });
-    drag.ghost.style.top = (drag.y - drag.offY) + 'px';
-    const tEl = drag.ghost.querySelector('.time');
-    if (tEl && at) tEl.innerHTML = `${hm(at)}<small>${dur ? '〜' + hm(new Date(at.getTime() + dur)) : ''}</small>`;
+    const same = at && Math.abs(at - m.at) < 60000;
+    const txt = at ? `${dayKey(at) !== dayKey(m.at) ? mdw(at) + ' ' : ''}${hm(at)}${dur ? '〜' + hm(new Date(at.getTime() + dur)) : ''}` : '';
+    drag.badge.textContent = same ? 'そのまま' : txt;
+    drag.badge.classList.toggle('same', !!same);
+    drag.ph.querySelector('.ph-time').textContent = at ? hm(at) : '';
   }
   function drop() {
     cancelAnimationFrame(raf);
-    const { ghost, line, card, target } = drag;
-    ghost.remove(); line.remove(); card.classList.remove('drag-src');
-    drag = null; justDragged = true; setTimeout(() => { justDragged = false; }, 350);
-    if (!target?.at || !target.m) return;
-    const { m, at } = target, it = m.it, trip = currentTrip();
-    if (Math.abs(at - m.at) < 60000) return;
-    undoable(trip, `${mdw(at)} ${hm(at)} に移しました`, () => {
-      const diff = at - m.at;
-      if (m.kind === '') { it.start = toLocalISO(at); if (it.end) it.end = toLocalISO(new Date(parseLocal(it.end).getTime() + diff)); }
-      else if (m.kind === 'in') it.start = toLocalISO(at);
-      else if (m.kind === 'out') it.end = toLocalISO(at);
-    }, renderTrip);
+    const { ghost, ph, card, target } = drag;
+    drag = null; justDragged = true; setTimeout(() => { justDragged = false; }, 400);
+    // 空きの位置へ吸い込まれるように収める
+    const pr = ph.querySelector('.ph-box').getBoundingClientRect();
+    const gl = parseFloat(ghost.style.left), gt = parseFloat(ghost.style.top);
+    ghost.classList.remove('lifted');
+    ghost.classList.add('settle');
+    ghost.style.transform = `translate3d(${pr.left - gl}px, ${pr.top - gt}px, 0) scale(1)`;
+    setTimeout(() => {
+      ghost.remove(); root.classList.remove('dragging');
+      const { m, at } = target || {};
+      if (!at || !m || Math.abs(at - m.at) < 60000) { ph.remove(); card.classList.remove('drag-src'); renderTrip(); return; }
+      const it = m.it, trip = currentTrip();
+      undoable(trip, `${mdw(at)} ${hm(at)} に移しました`, () => {
+        const diff = at - m.at;
+        if (m.kind === '') { it.start = toLocalISO(at); if (it.end) it.end = toLocalISO(new Date(parseLocal(it.end).getTime() + diff)); }
+        else if (m.kind === 'in') it.start = toLocalISO(at);
+        else if (m.kind === 'out') it.end = toLocalISO(at);
+      }, renderTrip);
+      // 収まった予定を少し光らせる
+      requestAnimationFrame(() => { const nc = el().querySelector(`.tl-item[data-ev="${CSS.escape(m.it.id + ':' + m.kind)}"]`); nc?.classList.add('dropped'); setTimeout(() => nc?.classList.remove('dropped'), 900); });
+    }, 260);
   }
   root.addEventListener('pointerdown', (e) => {
-    const card = e.target.closest('.tl:not(.untimed) > .tl-item[data-ev]');
-    if (!card || e.target.closest('button, a, input, select, textarea') || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    const card = e.target.closest(SEL);
+    if (!card || e.target.closest('button, a, input, select, textarea') || (e.pointerType === 'mouse' && e.button !== 0) || drag) return;
     st = { x: e.clientX, y: e.clientY, card };
-    timer = setTimeout(() => { timer = 0; if (st) begin(); }, 420);
+    // 押している間、少し沈む（つかめる合図）
+    setTimeout(() => { if (st?.card === card && !drag) card.classList.add('pressing'); }, 120);
+    timer = setTimeout(() => { timer = 0; if (st) begin(); }, 450);
   });
   // 指がタイムラインの外（下のタブなど）に出ても追いかけるよう、画面全体で受ける
+  // 横になぞると、うしろの「複製」「削除」が出る（iOS のリストと同じ）
+  let sw = null;
   document.addEventListener('pointermove', (e) => {
-    if (drag) { drag.y = e.clientY; place(); return; }
-    if (st && Math.hypot(e.clientX - st.x, e.clientY - st.y) > 8) cancel();
+    if (drag) { drag.x = e.clientX; drag.y = e.clientY; return; }
+    if (sw) {
+      const dx = Math.min(0, Math.max(-200, e.clientX - sw.x0 + sw.base));
+      sw.dx = dx; sw.ev.style.transform = `translateX(${dx}px)`;
+      return;
+    }
+    if (!st) return;
+    const dx = e.clientX - st.x, dy = e.clientY - st.y;
+    if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.3 && st.card.querySelector('.swipe-acts')) {
+      const card = st.card; cancel();
+      closeSwipes(card);
+      const ev = card.querySelector('.ev');
+      sw = { card, ev, x0: e.clientX, base: card.classList.contains('swiped') ? -150 : 0, dx: 0 };
+      card.classList.add('swiping');
+      ev.style.transition = 'none';
+      return;
+    }
+    if (Math.hypot(dx, dy) > 8) cancel();
   });
-  const end = () => { if (drag) drop(); cancel(); };
+  const end = () => {
+    if (sw) {
+      const { card, ev, dx } = sw; sw = null;
+      card.classList.remove('swiping');
+      ev.style.transition = '';
+      const open = dx < -70;
+      card.classList.toggle('swiped', open);
+      ev.style.transform = open ? 'translateX(-150px)' : '';
+      if (Math.abs(dx) > 6) { justDragged = true; setTimeout(() => { justDragged = false; }, 300); }
+      return;
+    }
+    if (drag) drop(); cancel();
+  };
   document.addEventListener('pointerup', end);
   document.addEventListener('pointercancel', end);
   // つかんでいる間は画面がスクロールしないように
   document.addEventListener('touchmove', (e) => { if (drag) e.preventDefault(); }, { passive: false });
   root.addEventListener('contextmenu', (e) => { if (e.target.closest('.tl-item')) e.preventDefault(); });
   // つかんだ後の「タップ」で編集が開かないように
-  root.addEventListener('click', (e) => { if (justDragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+  root.addEventListener('click', (e) => {
+    if (justDragged) { e.stopPropagation(); e.preventDefault(); return; }
+    // 開いている「複製・削除」は、ほかをタップしたら閉じる
+    const open = root.querySelector('.tl-item.swiped');
+    if (open && !e.target.closest('.swipe-acts')) { closeSwipes(); e.stopPropagation(); e.preventDefault(); }
+  }, true);
 }
 
 export function bindTrip() {
@@ -638,6 +739,8 @@ export function bindTrip() {
       }
       case 'jump': jumpTo(t.dataset.ev); break;
       case 'itemmenu': if (it) itemMenu(trip, it); break;
+      case 'sw-dup': if (it) { closeSwipes(); undoable(trip, '複製しました', () => dupItem(trip, it), renderTrip); } break;
+      case 'sw-del': if (it) { closeSwipes(); undoable(trip, '削除しました', () => { trip.items = trip.items.filter((x) => x.id !== it.id); }, renderTrip); } break;
       case 'daymenu': if (trip) dayMenu(trip, t.dataset.dm); break;
       case 'gap-add': {
         const g = t.closest('.gap-slot');
@@ -853,21 +956,15 @@ function tripMenu() {
   sheet({
     title: t.name, left: '閉じる',
     build(body, close) {
-      body.innerHTML = `<div class="list">
-        <button class="row" data-k="rename">${I.edit}<div class="grow">名前を変える</div></button>
-        <button class="row" data-k="new">${I.plus}<div class="grow">新しい旅をつくる</div></button>
-        <button class="row" data-k="fixall">${I.check}<div class="grow">推定の時刻を流れに合わせて直す</div></button>
-        <button class="row" data-k="shift">${I.clock}<div class="grow">旅をまるごと別の日程にずらす</div></button>
-        <button class="row" data-k="docs">${I.folder}<div class="grow">旅の資料（時刻表・チケットの写真やPDF）</div></button>
-        <button class="row" data-k="shiori">${I.note}<div class="grow">旅のしおりをつくる（印刷・PDF）</div></button>
-        <button class="row" data-k="ics">${I.clock}<div class="grow">全部の予定をカレンダーに登録</div></button>
-        <button class="row" data-k="social">${I.globe}<div class="grow">旅仲間と共有・チャット</div></button>
-        <button class="row" data-k="share">${I.share}<div class="grow">旅程を文字で共有</div></button>
-        <button class="row" data-k="export">${I.download}<div class="grow">この旅をファイルに保存</div></button>
-        <label class="row">${I.upload}<div class="grow">ファイルから旅を読み込む</div><input type="file" accept=".json,application/json" hidden id="trip-imp"></label>
-        <button class="row" data-k="reset" style="color:var(--orange)">${I.check}<div class="grow">予約チェックを全部外す</div></button>
-        <button class="row" data-k="del" style="color:var(--red)">${I.trash}<div class="grow">この旅を削除</div></button>
-      </div>`;
+      const row = (k, ic, label, sub = '', cls = '') => `<button class="row icon-row ${cls}" data-k="${k}"><span class="ico">${I[ic]}</span><div class="grow">${label}${sub ? `<div class="sub">${sub}</div>` : ''}</div></button>`;
+      body.innerHTML = `
+        <div class="list grouped">${row('rename', 'edit', '名前を変える')}${row('new', 'plus', '新しい旅をつくる')}${row('docs', 'folder', '旅の資料', '時刻表・チケットの写真やPDF')}</div>
+        <div class="section-title">旅程を整える</div>
+        <div class="list grouped">${row('fixall', 'check', '推定の時刻を直す', '宿のチェックイン・アウトを流れに合わせる')}${row('shift', 'clock', '旅の日程をずらす', '延期・前倒しの時に、まるごと移す')}</div>
+        <div class="section-title">共有・書き出し</div>
+        <div class="list grouped">${row('shiori', 'note', '旅のしおりをつくる', '印刷・PDF')}${row('ics', 'clock', '全部の予定をカレンダーに登録')}${row('social', 'globe', '旅仲間と共有・チャット')}${row('share', 'share', '旅程を文字で共有')}${row('export', 'download', 'この旅をファイルに保存')}
+          <label class="row icon-row"><span class="ico">${I.upload}</span><div class="grow">ファイルから旅を読み込む</div><input type="file" accept=".json,application/json" hidden id="trip-imp"></label></div>
+        <div class="list grouped" style="margin-top:22px">${row('reset', 'check', '予約チェックを全部外す', '', 'warn')}${row('del', 'trash', 'この旅を削除', '', 'danger')}</div>`;
       $$('[data-k]', body).forEach((b) => b.onclick = async () => {
         const k = b.dataset.k;
         if (k === 'docs') { close(); setTimeout(openDocs, 250); return; }

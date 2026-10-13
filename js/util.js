@@ -156,6 +156,14 @@ function backdrop(onClick) {
 }
 
 // 下から出るシート。build(body, close) で中身を作る
+// 開いているシート・ページの数で、うしろの画面の見た目を変える（iOS のように奥へ下がる）
+const depth = { sheet: 0, page: 0 };
+function stack(kind, d) {
+  depth[kind] = Math.max(0, depth[kind] + d);
+  document.body.classList.toggle('sheet-open', depth.sheet > 0 && depth.page === 0);
+  document.body.classList.toggle('page-open', depth.page > 0);
+}
+
 export function sheet({ title, left = 'キャンセル', right = '', onRight, build, onClose }) {
   const bd = backdrop(() => close());
   const el = document.createElement('div');
@@ -166,6 +174,7 @@ export function sheet({ title, left = 'キャンセル', right = '', onRight, bu
   let closed = false;
   function close() {
     if (closed) return; closed = true;
+    if (counted) stack('sheet', -1);
     el.classList.remove('show'); bd.classList.remove('show');
     setTimeout(() => { el.remove(); bd.remove(); }, 420);
     onClose?.();
@@ -174,7 +183,8 @@ export function sheet({ title, left = 'キャンセル', right = '', onRight, bu
   $('.r', el).onclick = async () => { if (!onRight || (await onRight(body, close)) !== false) close(); };
   if (!right) $('.r', el).style.visibility = 'hidden';
   build?.(body, close);
-  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('show')));
+  var counted = false; // eslint-disable-line no-var
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (closed) return; el.classList.add('show'); stack('sheet', 1); counted = true; }));
   // つまみを下へ引いて閉じる
   let y0 = null, dy = 0;
   const head = $('.sheet-head', el), grab = $('.grabber', el);
@@ -193,11 +203,12 @@ export function page({ title, right = '', onRight, build, onClose }) {
   el.innerHTML = `<div class="page-head"><button class="back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>戻る</button><h2>${esc(title)}</h2><div class="right">${right}</div></div><div class="page-body"></div>`;
   $('#layers').append(el);
   const body = $('.page-body', el);
-  function close() { el.classList.remove('show'); setTimeout(() => el.remove(), 420); onClose?.(); }
+  let closed = false, pushed = false;
+  function close() { if (closed) return; closed = true; if (pushed) stack('page', -1); el.classList.remove('show'); setTimeout(() => el.remove(), 420); onClose?.(); }
   $('.back', el).onclick = close;
   if (onRight) $('.right', el).onclick = () => onRight(body, close);
   build?.(body, close);
-  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('show')));
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (closed) return; el.classList.add('show'); stack('page', 1); pushed = true; }));
   // 左端から右へなぞって戻る
   let x0 = null, dx = 0;
   el.addEventListener('touchstart', (e) => { if (e.touches[0].clientX < 24) { x0 = e.touches[0].clientX; el.style.transition = 'none'; } }, { passive: true });
