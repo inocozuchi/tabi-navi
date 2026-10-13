@@ -176,7 +176,7 @@ export function sheet({ title, left = 'キャンセル', right = '', onRight, bu
     if (closed) return; closed = true;
     if (counted) stack('sheet', -1);
     el.classList.remove('show'); bd.classList.remove('show');
-    setTimeout(() => { el.remove(); bd.remove(); }, 420);
+    setTimeout(() => { el.remove(); bd.remove(); }, 320);
     onClose?.();
   }
   $('.l', el).onclick = close;
@@ -185,6 +185,8 @@ export function sheet({ title, left = 'キャンセル', right = '', onRight, bu
   build?.(body, close);
   var counted = false; // eslint-disable-line no-var
   requestAnimationFrame(() => requestAnimationFrame(() => { if (closed) return; el.classList.add('show'); stack('sheet', 1); counted = true; }));
+  // 開いた時だけ中身を順に出す（中で描き直した時は動かさない）
+  setTimeout(() => el.classList.add('settled'), 450);
   // つまみを下へ引いて閉じる
   let y0 = null, dy = 0;
   const head = $('.sheet-head', el), grab = $('.grabber', el);
@@ -204,11 +206,12 @@ export function page({ title, right = '', onRight, build, onClose }) {
   $('#layers').append(el);
   const body = $('.page-body', el);
   let closed = false, pushed = false;
-  function close() { if (closed) return; closed = true; if (pushed) stack('page', -1); el.classList.remove('show'); setTimeout(() => el.remove(), 420); onClose?.(); }
+  function close() { if (closed) return; closed = true; if (pushed) stack('page', -1); el.classList.remove('show'); setTimeout(() => el.remove(), 320); onClose?.(); }
   $('.back', el).onclick = close;
   if (onRight) $('.right', el).onclick = () => onRight(body, close);
   build?.(body, close);
   requestAnimationFrame(() => requestAnimationFrame(() => { if (closed) return; el.classList.add('show'); stack('page', 1); pushed = true; }));
+  setTimeout(() => el.classList.add('settled'), 450);
   // 左端から右へなぞって戻る
   let x0 = null, dx = 0;
   el.addEventListener('touchstart', (e) => { if (e.touches[0].clientX < 24) { x0 = e.touches[0].clientX; el.style.transition = 'none'; } }, { passive: true });

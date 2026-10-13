@@ -34,6 +34,9 @@ function go(t, sub) {
   $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.tab === t));
   if (t === 'transit' && sub) showTransitTab(sub); else renders[t]();
   $('#view-' + t).scrollTop = 0;
+  // タブを開いた時だけ中身を順に出す（1分ごとの描き直しでは動かさない）
+  const v = $('#view-' + t);
+  v.classList.remove('settled'); clearTimeout(v._st); v._st = setTimeout(() => v.classList.add('settled'), 600);
   updateNav();
 }
 $$('#tabbar button').forEach((b) => b.addEventListener('click', () => {

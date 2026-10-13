@@ -124,8 +124,12 @@ export function startPlace(it) { return TRANSPORT.has(it.type) ? (it.from || '')
 export function endPlace(it) { return TRANSPORT.has(it.type) ? (it.to || '') : (it.address || it.title || ''); }
 export function locateItem(it, which = 'end') {
   if (it.lat && it.lon && !TRANSPORT.has(it.type)) return { lat: it.lat, lon: it.lon, name: it.title };
-  const p = which === 'end' ? endPlace(it) : startPlace(it);
-  return locate(p) || (!TRANSPORT.has(it.type) ? locate(it.title) : null);
+  if (TRANSPORT.has(it.type)) return locate(which === 'end' ? it.to : it.from);
+  // 観光・宿などは、名前（例：伏見稲荷大社）の方が住所の市（例：京都）より正確
+  const t = locate(it.title);
+  if (t) return t;
+  const a = locate(it.address);
+  return a ? { ...a, coarse: true } : null;
 }
 // 距離の文字
 export const kmText = (d) => (d == null ? '' : d < 1 ? `${Math.round(d * 1000)}m` : `${d < 10 ? d.toFixed(1) : Math.round(d)}km`);

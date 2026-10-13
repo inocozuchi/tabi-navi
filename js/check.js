@@ -89,7 +89,8 @@ export function checkTrip(trip) {
     const a = placeOf(p, 'end'), b = placeOf(n, 'start');
     if (!a.loc || !b.loc) continue;
     const d = km(a.loc, b.loc);
-    if (d == null || d < FAR) continue;
+    // 住所の市だけで場所が分かった時は大まかなので、もっと離れている時だけ言う
+    if (d == null || d < ((a.loc.coarse || b.loc.coarse) ? 12 : FAR)) continue;
     const type = suggestType(d, a.loc, b.loc);
     const est = estMinutes(d, type);
     const room = Math.round((n.at - (p.end || p.at)) / 60000);

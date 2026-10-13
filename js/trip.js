@@ -13,6 +13,18 @@ import { kmText, minText } from './geo.js';
 const el = () => $('#view-trip');
 let filter = 'all';
 let selectedDay = 'all';
+// 次の描画で光らせる予定（追加・複製した時）
+let pendingFlash = null;
+export const flashNext = (id) => { pendingFlash = id; };
+// 次の描画では、カードをもう一度ふわっと出す（日やしぼり込みを切り替えた時）
+const replay = () => el().classList.remove('settled');
+// 予定をたたむように消してから、fn を行う
+function removeAnimated(id, fn) {
+  const cards = el().querySelectorAll(`.tl-item[data-id="${CSS.escape(id)}"]`);
+  if (!cards.length) return fn();
+  cards.forEach((c) => { c.style.maxHeight = c.offsetHeight + 'px'; c.classList.add('removing'); });
+  setTimeout(fn, 200);
+}
 
 export function currentTrip() {
   const d = store.data;
@@ -191,6 +203,11 @@ export function renderTrip() {
   }
   html += `<div class="now-jump-wrap"><button class="now-jump" data-act="nowjump" aria-label="いまの予定へ">${I.clock}<span>いまの予定へ</span></button></div>`;
   el().innerHTML = html;
+  if (pendingFlash) {
+    const nc = el().querySelector(`.tl-item[data-id="${CSS.escape(pendingFlash)}"]`);
+    pendingFlash = null;
+    if (nc) { nc.classList.add('added'); setTimeout(() => nc.classList.remove('added'), 800); requestAnimationFrame(() => { const r = nc.getBoundingClientRect(), v = el().getBoundingClientRect(); if (r.top < v.top + 60 || r.bottom > v.bottom - 90) nc.scrollIntoView({ behavior: 'smooth', block: 'center' }); }); }
+  }
   // 1分ごとの描き直しで、カードが毎回ふわっと出直さないように（最初の1回だけ動かす）
   if (!el().classList.contains('settled')) setTimeout(() => el().classList.add('settled'), 900);
   drawWeather();
@@ -235,11 +252,11 @@ function checkHTML(res) {
   if (!n) return `<div class="check-card ok"><span class="ck-badge">${I.check}</span><div class="grow"><b>旅程チェック</b><span>抜けや時間のおかしい所は見つかりませんでした</span></div></div>`;
   return `<div class="check-card ${w ? 'warn' : 'info'} ${checkOpen ? 'open' : ''}">
     <button class="ck-head" data-act="check-toggle"><span class="ck-badge">${w ? I.warn : I.info}</span><div class="grow"><b>旅程チェック・${n}件</b><span>${esc(res.issues[0].title)}${n > 1 ? ` ほか${n - 1}件` : ''}</span></div><span class="ck-chev">${I.chev}</span></button>
-    <div class="ck-list">${res.issues.map((x) => `<div class="ck-item ${x.level}">
+    <div class="ck-list"><div class="ck-list-inner">${res.issues.map((x) => `<div class="ck-item ${x.level}">
       <span class="ck-ico">${I[x.icon] || I.info}</span>
       <div class="grow"><b>${esc(x.title)}</b><span>${esc(x.detail || '')}</span>
         <div class="ck-btns">${x.fix ? `<button class="primary" data-act="fix" data-key="${esc(x.key)}">${esc(x.fix.label)}</button>` : ''}${x.slot ? `<button class="primary" data-act="slot-add" data-key="${esc(x.slot.key)}">${I.plus}${x.slot.kind === 'hotel' ? '宿を追加' : '移動を追加'}</button>` : ''}${x.ev ? `<button data-act="jump" data-ev="${esc(x.ev)}">見る</button>` : ''}<button data-act="ignore" data-key="${esc(x.key)}">気にしない</button></div>
-      </div></div>`).join('')}</div>
+      </div></div>`).join('')}</div></div>
   </div>`;
 }
 // タイムラインの中の「抜けています」の入力枠
@@ -292,6 +309,7 @@ const moveToDay = (it, day) => { const s = parseLocal(it.start); if (!s) { it.st
 // 複製：同じ予定をすぐ後ろに（宿は同じ日程のまま）
 function dupItem(trip, it) {
   const s = parseLocal(it.start), c = cloneItem(it);
+  flashNext(c.id);
   const dur = s && parseLocal(it.end) ? (parseLocal(it.end) - s) / 60000 : 0;
   if (s && it.type !== 'hotel') shiftItem(c, Math.max(dur, 30));
   trip.items.push(c);
@@ -335,7 +353,7 @@ function itemMenu(trip, it) {
           editItem({ id: uid(), type: 'activity', title: '', start: base ? toLocalISO(base) : '', end: base ? toLocalISO(addMin(base, 60)) : '', reserved: false, remind: 30, address: k === 'after' ? (isMove ? it.to : it.address || it.title || '') : (isMove ? it.from : it.address || '') });
           return;
         }
-        if (k === 'del') { close(); undoable(trip, '削除しました', () => { trip.items = trip.items.filter((x) => x.id !== it.id); }, renderTrip); }
+        if (k === 'del') { close(); setTimeout(() => removeAnimated(it.id, () => undoable(trip, '削除しました', () => { trip.items = trip.items.filter((x) => x.id !== it.id); }, renderTrip)), 180); }
       });
       $$('[data-m]', body).forEach((b) => b.onclick = () => {
         const m = +b.dataset.m, all = $('#im-all', body)?.checked;
@@ -699,13 +717,13 @@ export function bindTrip() {
     const tDay = e.target.closest('[data-day]');
     if (tDay) {
       selectedDay = tDay.dataset.day;
-      haptic();
+      haptic(); replay();
       renderTrip();
       return;
     }
     const t = e.target.closest('[data-act],[data-filter]');
     if (!t) return;
-    if (t.dataset.filter) { filter = t.dataset.filter; haptic(); renderTrip(); return; }
+    if (t.dataset.filter) { filter = t.dataset.filter; haptic(); replay(); renderTrip(); return; }
     const act = t.dataset.act;
     const trip = currentTrip();
     const it = trip?.items.find((x) => x.id === t.closest('[data-id]')?.dataset.id);
@@ -740,7 +758,7 @@ export function bindTrip() {
       case 'jump': jumpTo(t.dataset.ev); break;
       case 'itemmenu': if (it) itemMenu(trip, it); break;
       case 'sw-dup': if (it) { closeSwipes(); undoable(trip, '複製しました', () => dupItem(trip, it), renderTrip); } break;
-      case 'sw-del': if (it) { closeSwipes(); undoable(trip, '削除しました', () => { trip.items = trip.items.filter((x) => x.id !== it.id); }, renderTrip); } break;
+      case 'sw-del': if (it) { closeSwipes(); removeAnimated(it.id, () => undoable(trip, '削除しました', () => { trip.items = trip.items.filter((x) => x.id !== it.id); }, renderTrip)); } break;
       case 'daymenu': if (trip) dayMenu(trip, t.dataset.dm); break;
       case 'gap-add': {
         const g = t.closest('.gap-slot');
@@ -1061,7 +1079,7 @@ export function editItem(orig, { onSave, asAlternateOf } = {}) {
     onRight: () => {
       if (onSave) { onSave(it); return; }
       const t = ensureTrip();
-      if (isNew) t.items.push(it); else Object.assign(orig, it);
+      if (isNew) { t.items.push(it); flashNext(it.id); } else Object.assign(orig, it);
       store.save(); renderTrip(); toast('保存しました');
     },
     build(body, close) {
