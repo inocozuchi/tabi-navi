@@ -4,7 +4,7 @@ import { getWeather, wmo, searchCity, clearWeatherCache, dailyFor } from './weat
 import { nextEvent, currentTrip, events, renderTrip } from './trip.js';
 import { nextAny } from './alarm.js';
 import { openSleep, alarmFor } from './alarm-ui.js';
-import { openImport, openPaste } from './ai.js';
+import { openCapture } from './ai.js';
 import { openMemos, openWishlist, openBudget, openPacking, openCurrency } from './tools.js';
 import { openShiori } from './shiori.js';
 import { openSocial, social, startLocation } from './social.js';
@@ -14,11 +14,13 @@ let pos = null;
 window.addEventListener('tabi-pos', (e) => { pos = e.detail; });
 
 // ===== いちばん上：時刻と天気（常に表示） =====
+let heroOpen = false;
 export function heroHTML() {
-  return `<div class="hero" id="hero"><div class="glow"></div>
-    <div class="hero-top"><div><div class="date" id="h-date">いまの時刻</div><div class="clock" id="h-clock"></div></div>
+  // 時刻と天気を1行に。1時間ごとの天気は、時刻の所をタップした時だけ出す
+  return `<div class="hero slim ${heroOpen ? 'open' : ''}" id="hero"><div class="glow"></div>
+    <div class="hero-top"><button class="hero-clock" data-act="hero-more" aria-label="1時間ごとの天気"><div class="clock" id="h-clock"></div><span class="hero-more">${I.chev}</span></button>
       <button class="hero-wx" id="h-wx"><span class="spinner" style="border-color:rgba(255,255,255,.3);border-top-color:#fff"></span></button></div>
-    <div class="hourly" id="h-hourly"></div>
+    <div class="hourly-wrap"><div class="hourly" id="h-hourly"></div></div>
   </div>`;
 }
 export function tickHome() {
@@ -26,7 +28,6 @@ export function tickHome() {
   if (!c) return;
   const n = new Date();
   c.innerHTML = `${n.getHours()}:${pad(n.getMinutes())}${store.data.settings.showSeconds ? `<span class="sec">${pad(n.getSeconds())}</span>` : ''}`;
-  const dt = $('#h-date'); if (dt) dt.textContent = 'いまの時刻';
 }
 export async function drawWeather(force) {
   tickHome();
@@ -39,8 +40,8 @@ export async function drawWeather(force) {
     const h = $('#hero');
     if (!h) return;
     h.className = 'hero ' + (night ? 'night' : [61, 63, 65, 80, 81, 82, 95, 96, 99, 51, 53, 55].includes(c.weather_code) ? 'rain' : c.weather_code >= 3 ? 'cloud' : '');
-    $('#h-wx').innerHTML = `<div class="hstack" style="justify-content:flex-end;gap:6px"><span class="wicon">${ic}</span><span class="temp">${Math.round(c.temperature_2m)}°</span></div>
-      <div class="wx-meta">${label}　${Math.round(dd.temperature_2m_max[0])}° / ${Math.round(dd.temperature_2m_min[0])}°<br>☔ ${dd.precipitation_probability_max[0] ?? '-'}%　${I.pin}${esc(wx.where.name)}</div>`;
+    $('#h-wx').innerHTML = `<span class="wicon">${ic}</span><span class="temp">${Math.round(c.temperature_2m)}°</span>
+      <div class="wx-meta">${label}・${Math.round(dd.temperature_2m_max[0])}°/${Math.round(dd.temperature_2m_min[0])}°・☔${dd.precipitation_probability_max[0] ?? '-'}%<br>${I.pin}${esc(wx.where.name)}</div>`;
     const idx = Math.max(0, wx.hourly.time.findIndex((t) => new Date(t) >= new Date(Date.now() - 3600e3)));
     $('#h-hourly').innerHTML = wx.hourly.time.slice(idx, idx + 24).map((t, i) => {
       const k = idx + i, hh = new Date(t).getHours();
@@ -72,7 +73,10 @@ export function statusHTML() {
   const done = evs.filter((e) => (e.end || e.at) < now).length;
   let main = '';
   if (first > now) {
-    main = `<div class="status-label">出発まで</div><div class="status-big">${dur(first - now)}</div><div class="status-sub">${mdw(first)} ${hm(first)}　${esc(titleOf(evs[0]))}</div>`;
+    // 出発までの日数は上の札に出ているので、ここは最初の予定を見せる（24時間を切ったらカウントダウン）
+    main = first - now < 864e5
+      ? `<div class="status-label">出発まで</div><div class="status-big mono" id="st-count" data-to="${first.getTime()}">${countdown(first - now)}</div><div class="status-sub"><b>${hm(first)}</b> ${esc(titleOf(evs[0]))}</div>`
+      : `<div class="status-label">最初の予定</div><div class="status-big sm">${mdw(first)} ${hm(first)}</div><div class="status-sub">${esc(titleOf(evs[0]))}${TRANSPORT.has(evs[0].it.type) && evs[0].it.from ? `　${esc(evs[0].it.from)} → ${esc(evs[0].it.to || '')}` : ''}</div>`;
   } else if (n?.cur) {
     const it = n.cur.it;
     main = `<div class="status-label">移動中 ・ 到着まで</div><div class="status-big mono" id="st-count" data-to="${n.cur.end.getTime()}">${countdown(n.cur.end - now)}</div><div class="status-sub">${esc(titleOf(n.cur))}　${esc(it.from || '')} → ${esc(it.to || '')}（${hm(n.cur.end)} 着）</div>`;
@@ -88,8 +92,7 @@ export function statusHTML() {
   } else main = `<div class="status-label">旅の予定はすべて終わりました</div><div class="status-big">おつかれさま！</div>`;
   return `<div class="card status">
     ${main}
-    <div class="progress" style="margin-top:12px"><i style="width:${(done / evs.length) * 100}%;background:var(--green)"></i></div>
-    <div class="small muted" style="margin-top:4px">進み具合 ${done}/${evs.length}</div>
+    <div class="progress" style="margin-top:10px" title="進み具合 ${done}/${evs.length}"><i style="width:${(done / evs.length) * 100}%;background:var(--green)"></i></div>
     <div id="h-prog"></div><div id="h-delay"></div>
     ${alarmLine}
   </div>`;
@@ -138,6 +141,7 @@ async function progress() {
 export function bindStatus(go) {
   $('#view-trip').addEventListener('click', (e) => {
     if (e.target.closest('#h-wx')) { pickPlace(); return; }
+    if (e.target.closest('[data-act="hero-more"]')) { heroOpen = !heroOpen; $('#hero')?.classList.toggle('open', heroOpen); return; }
     const a = e.target.closest('[data-act]')?.dataset.act;
     if (a === 'goalarm') go('alarm');
     if (a === 'alarmfor') alarmFromTrip();
@@ -210,8 +214,8 @@ export async function dayWeather(trip) {
 
 // ===== 道具タブ =====
 const TILES = [
-  ['paste', '文字から取り込む', I.copy, 'var(--blue)', '予約メール・乗換結果・メモ'],
-  ['import', '写真・PDFから取り込む', I.photo, 'var(--indigo)', '旅程表PDF・スクショ・予約画面'],
+  ['import', '取り込む', I.photo, 'var(--indigo)', '予約メール・乗換案内・旅程表・メモ・スクショ・PDF'],
+  ['assist', 'AIに相談', I.sparkles, 'var(--purple)', '並べ替え・抜けの補完・おすすめの提案'],
   ['wish', '行きたいリスト', I.star, 'var(--pink)', 'スポットをためて旅程に'],
   ['docs', '旅の資料', I.folder, 'var(--teal)', '時刻表・チケットの写真やPDFを保存'],
   ['shiori', '旅のしおり', I.note, 'var(--teal)', '印刷・PDFで保存'],
@@ -238,7 +242,7 @@ const rowTile = ([k, n, ic, c, sub]) => `<button class="row icon-row" data-t="${
 export function bindTools() {
   $('#view-tools').addEventListener('click', (e) => {
     const t = e.target.closest('[data-t]')?.dataset.t;
-    const map = { paste: () => openPaste({}), import: () => openImport({}), wish: openWishlist, shiori: openShiori, docs: () => import('./docs.js').then((m) => m.openDocs()), memo: openMemos, budget: openBudget, pack: openPacking, fx: openCurrency, social: openSocial, sleep: openSleep };
+    const map = { import: () => openCapture(), assist: () => import('./assist.js').then((m) => m.openAssist()), wish: openWishlist, shiori: openShiori, docs: () => import('./docs.js').then((m) => m.openDocs()), memo: openMemos, budget: openBudget, pack: openPacking, fx: openCurrency, social: openSocial, sleep: openSleep };
     map[t]?.();
   });
 }

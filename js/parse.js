@@ -196,7 +196,7 @@ const RIDE = /(新幹線|のぞみ|ひかり|こだま|はやぶさ|はやて|�
 const STATION_NG = /^(\d|乗換|乗り換え|徒歩|運賃|料金|IC|きっぷ|片道|往復|合計|所要|時間|距離|発車|到着|出発|経由|次|前|後|検索|印刷|保存|共有|ルート|定期|通勤|通学|指定席|自由席|グリーン|乗車|降車|番線|\[|【)/;
 function stationName(l) {
   const x = l.replace(/^[■□●○◆◇▼▽・\-–>→]+/, '').replace(/\s*(駅|から|まで)?\s*$/, '').trim();
-  if (!x || x.length > 20 || STATION_NG.test(x) || RIDE.test(x) && !/駅$/.test(l.trim())) return '';
+  if (!x || x.length > 20 || STATION_NG.test(x) || RIDE.test(x.replace(/バスタ|バスターミナル|バスセンター|バス停|バスのりば/g, '')) && !/駅$/.test(l.trim())) return '';
   if (/[0-9]{2,}/.test(x) && !/空港|ターミナル/.test(x)) return '';
   return x;
 }
@@ -213,7 +213,14 @@ function parseRoute(s, today) {
       const rest = l.replace(/(\d{1,2})\s*(?::|時)\s*(\d{2})?\s*分?\s*(am|pm|午前|午後)?/gi, ' ').replace(/[()（）\[\]]/g, ' ').trim();
       // 「06:00発 → 08:15着」のように1行に2つの時刻がある
       if (ts.length >= 2 && /発/.test(l) && /着/.test(l)) {
-        const names = rest.split(/→|->|~|－|-|発|着/).map((x) => stationName(x)).filter(Boolean);
+        // 「濃飛バス バスタ新宿 8:15発」のように、乗り物の名前が駅名の前に付いていることもある
+        let rideTxt = '';
+        const names = rest.split(/→|->|~|－|-|発|着/).map((x) => x.trim()).map((x) => {
+          let st = stationName(x);
+          if (!st && /\s/.test(x)) { const tok = x.split(/\s+/); const last = tok.pop(); st = stationName(last); if (st && !rideTxt && RIDE.test(tok.join(' '))) rideTxt = tok.join(' '); }
+          return st;
+        }).filter(Boolean);
+        if (rideTxt) rides.push({ text: rideTxt, li });
         if (!names.length) return; // 「06:00発→08:15着 2時間15分」のような、まとめの行
         pts.push({ t: ts[0], kind: 'd', station: names[0] || lastStation?.name || '', li });
         pts.push({ t: ts[1], kind: 'a', station: names[1] || '', li });
@@ -256,7 +263,7 @@ function parseRoute(s, today) {
     const d2 = dt && addDays(dt, dayShift + (bm < am ? 1 : 0));
     if (bm < am) dayShift++;
     prevMin = bm;
-    const ride = rides.filter((r) => r.li > a.li - 2 && r.li < b.li).map((r) => r.text)[0] || '';
+    const ride = rides.filter((r) => r.li > a.li - 2 && (r.li < b.li || r.li === a.li)).map((r) => r.text)[0] || '';
     const type = /新幹線|のぞみ|ひかり|こだま|はやぶさ|はやて|やまびこ|なすの|つばさ|こまち|とき|たにがわ|かがやき|はくたか|つるぎ|あさま|みずほ|さくら|つばめ|Shinkansen/.test(ride) ? 'shinkansen'
       : /バス|bus/i.test(ride) ? 'bus' : /メトロ|地下鉄|都営|Metro|Subway/i.test(ride) ? 'subway' : /フェリー|船|ferry/i.test(ride) ? 'ferry' : 'train';
     legs.push({ ...base(), type, title: ride.replace(/\s*\(.*?\)\s*$/, ''), from: a.station, to: b.station, start: iso(d1, a.t), end: iso(d2, b.t), platform: a.plat || '', operator: (/(JR[^\s線]*|東京メトロ|都営|近鉄|阪急|阪神|京阪|南海|名鉄|小田急|京王|東急|西武|東武|京急|京成|相鉄)/.exec(ride) || [])[1] || '' });
@@ -285,7 +292,9 @@ function parseArrow(s, today) {
     const dt = findDate(before.split('\n').slice(-6).join('\n') + '\n' + s.slice(m.index, m.index + m[0].length), today) || findDate(s, today);
     const t1 = findTimes(m[2])[0], t2 = findTimes(m[4])[0];
     const li = before.split('\n').length - 1;
-    const ride = (lines.slice(Math.max(0, li - 4), li + 1).reverse().find((l) => RIDE.test(l) && !/[→]/.test(l)) || '').replace(/^.*?(?:列車名|便名|路線)\s*[:：]\s*/, '').trim();
+    // 同じ行の前に書かれた乗り物の名前（「濃飛バス バスタ新宿 8:15発 → …」）
+    const pre = (lines[li] || '').slice(0, Math.max(0, (lines[li] || '').indexOf(m[1]))).trim();
+    const ride = RIDE.test(pre) && pre.length <= 30 ? pre : (lines.slice(Math.max(0, li - 4), li + 1).reverse().find((l) => RIDE.test(l) && !/[→]/.test(l)) || '').replace(/^.*?(?:列車名|便名|路線)\s*[:：]\s*/, '').trim();
     const type = /新幹線|のぞみ|ひかり|こだま|はやぶさ|はやて|やまびこ|つばさ|こまち|とき|かがやき|はくたか|みずほ|さくら|つばめ/.test(ride + s) ? 'shinkansen' : /バス/.test(ride) ? 'bus' : 'train';
     const d2 = dt && t2.h * 60 + t2.mi < t1.h * 60 + t1.mi ? addDays(dt, 1) : dt;
     out.push({ ...base(), type, title: ride, from, to, start: iso(dt, t1), end: iso(d2, t2) });

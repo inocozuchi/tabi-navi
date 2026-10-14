@@ -48,7 +48,7 @@ $$('#tabbar button').forEach((b) => b.addEventListener('click', () => {
 // iOS の小さいナビゲーションバー：大きい見出しが上に隠れたら、上に小さく見出しを出す
 const navbar = document.createElement('div');
 navbar.className = 'nav-small';
-navbar.innerHTML = '<span></span>';
+navbar.innerHTML = '<span></span><button class="nav-add" aria-label="予定を追加・取り込む"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>';
 $('#app').append(navbar);
 function updateNav() {
   const v = $('#view-' + tab);
@@ -59,9 +59,14 @@ function updateNav() {
   const show = top < (parseFloat(getComputedStyle(v).paddingTop) || 0) + 8;
   navbar.firstChild.textContent = tab === 'trip' ? (currentTrip()?.name || h.textContent) : h.textContent;
   navbar.classList.toggle('show', show);
+  navbar.classList.toggle('can-add', tab === 'trip' && !!currentTrip());
 }
 $$('.view').forEach((v) => v.addEventListener('scroll', () => requestAnimationFrame(updateNav), { passive: true }));
-navbar.onclick = () => $('#view-' + tab)?.scrollTo({ top: 0, behavior: 'smooth' });
+navbar.onclick = (e) => {
+  // ＋：旅程の「追加・取り込み」を開く
+  if (e.target.closest('.nav-add')) { haptic(); $('#view-trip [data-act="addmenu"]')?.click(); return; }
+  $('#view-' + tab)?.scrollTo({ top: 0, behavior: 'smooth' });
+};
 
 bindStatus(go);
 bindTools();

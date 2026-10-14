@@ -1,7 +1,7 @@
 // スクリーンショットから旅程をつくる
 //  ・AI（Claude / Gemini）の API キーがある時：画像を AI に読ませて、予定を構造化して返してもらう（高精度）
 //  ・キーが無い時：端末の中で文字を読み取り（Tesseract.js）、簡単な規則で予定に分ける（精度は控えめ）
-import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, blobToBase64, blobs, pad, toLocalISO, segment, aiOn, aiName, aiCompany, aiProvider } from './util.js';
+import { $, $$, esc, uid, store, sheet, toast, haptic, I, TYPES, TRANSPORT, parseLocal, hm, mdw, dayKey, blobToBase64, blobs, pad, toLocalISO, segment, aiOn, aiName, aiCompany, aiProvider, switchHTML } from './util.js';
 import { currentTrip, ensureTrip, renderTrip, editItem, events } from './trip.js';
 import { parseAny, cleanOcrText, findDate, layoutLines, looksLikeSchedule } from './parse.js';
 import { mergeReadings, pickVersion, findExisting, overwrite, diffs, FIELDS } from './merge.js';
@@ -14,9 +14,13 @@ const str = { type: 'string' };
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['trip_name', 'items'],
+  required: ['trip_name', 'items', 'timetables'],
   properties: {
     trip_name: { type: 'string', description: '旅の名前の案（例：大阪・京都 2泊3日）' },
+    timetables: {
+      type: 'array', description: '時刻表・路線図・構内図など、特定の1便の予定ではない資料',
+      items: { type: 'object', additionalProperties: false, required: ['source_image', 'title'], properties: { source_image: { type: 'integer' }, title: { type: 'string', description: '例「平湯BT→新穂高 時刻表」' } } },
+    },
     items: {
       type: 'array',
       items: {
@@ -53,6 +57,8 @@ const SYSTEM = `あなたは旅行の予定表をつくるアシスタントで�
 - 同じ区間について別の候補（予備ルート）として送られた画像の予定は is_alternate=true にする。1つの経路候補に属する区間には同じ route_group を付ける（主のルートは "main"）。
 - 縦長の画像は「分割した○枚目」として続けて送ることがある。分割の境目で同じ予定が2回写っていたら1件にまとめ、source_image は元の画像の番号にする。
 - 予定は実際に起きる順に並べ、日付を必ず付ける。PDFの表で宿が先に書かれていても、時刻は移動との前後関係から決める。
+- 送られるのは画像だけでなく、貼り付けた文字（予約メール・乗換案内のコピー・旅程表・自由なメモ）や PDF の文字のこともある。形式がバラバラでも、予定として読めるものは全部読む。メモの「2日目」「翌朝」「夕方」なども、旅の日付と前後の流れから日時を決める（時刻が曖昧なら notes に「時刻は目安」と書く）。
+- 時刻表（1つの路線や停留所の発車時刻がたくさん並ぶ表）・路線図・構内図・地図は、予定（items）にしない。timetables に、その画像の番号と分かりやすい名前を入れる。
 - 画像に関係のない広告・おすすめ・アプリのボタンは無視する。重複する予定は1件にまとめる。写っていないことを推測で作らない。`;
 
 let sdkPromise;
@@ -280,96 +286,73 @@ export function itemsFromOcrTexts(texts) {
   out.title = texts.map((t) => parseAny(t).title).find(Boolean) || '';
   return out;
 }
-// ===== 文字を貼り付けて取り込む =====
-// 予約メール・乗換案内の結果・メモなど、形式がバラバラでも自動で見分ける
-export function openPaste({ alternate = false, targetId = null, initialText = '' } = {}) {
-  const s = store.data.settings;
-  let mode = alternate ? 'alt' : 'main';
-  let target = targetId;
-  let how = readModeOf();
-  sheet({
-    title: '文字から取り込む', left: 'キャンセル',
-    build(body, close) {
-      body.innerHTML = `
-        <div class="field-label">取り込む文字</div>
-        <textarea id="ps-text" class="field" rows="9" placeholder="ここに貼り付け&#10;&#10;例）予約完了メール、乗換案内の結果、旅程表、&#10;「10/12 9:30 伏見稲荷」のようなメモ&#10;何件まとめて貼ってもOK">${esc(initialText)}</textarea>
-        <div class="hstack" style="margin-top:8px"><button class="btn small secondary" id="ps-clip">${I.copy}クリップボードから貼り付け</button><button class="btn small secondary" id="ps-clear">消す</button></div>
-        <div class="field-label">取り込み方</div>
-        <div class="segment" id="ps-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
-        <div id="ps-how-box">${readModeHTML('ps-how', how)}</div>
-        <div class="section-foot">💡 写真やスクショの文字は、iPhoneの「写真」アプリで画像を開き、右下の<b>テキスト認識ボタン</b>→「すべてをコピー」でコピーできます（無料・高精度）。</div>
-        <div style="margin-top:14px"><button class="btn" id="ps-go">${I.sparkles}読み取る</button></div>
-        <div id="ps-prog" style="margin-top:12px"></div>`;
-      const ta = $('#ps-text', body);
-      $('#ps-clip', body).onclick = async () => { try { ta.value = await navigator.clipboard.readText(); toast('貼り付けました'); } catch { ta.focus(); toast('長押しして「ペースト」を選んでください'); } };
-      $('#ps-clear', body).onclick = () => { ta.value = ''; ta.focus(); };
-      segment($('#ps-mode', body), (v) => { mode = v; });
-      const bindHow = () => { if ($('#ps-how', body)) segment($('#ps-how', body), (v) => { how = v; store.data.settings.readMode = v; store.save(); $('#ps-how-box', body).innerHTML = readModeHTML('ps-how', how); bindHow(); }); };
-      bindHow();
-      $('#ps-go', body).onclick = async (e) => {
-        const text = ta.value.trim();
-        if (!text) { toast('文字を貼り付けてください'); return; }
-        const prog = $('#ps-prog', body);
-        e.target.disabled = true;
-        try {
-          const readers = [];
-          if (how !== 'ai') readers.push({ src: 'local', label: '端末の読み取り', run: async () => { const r = parseAny(text); return { items: r, trip_name: r.title || '' }; } });
-          if (how !== 'local' && aiOn()) readers.push({
-            src: 'ai', label: aiName(),
-            run: async (p) => {
-              p('AIが読み取っています…', 0.2);
-              let k = 0.2; const tm = setInterval(() => { k = Math.min(0.92, k + (0.95 - k) * 0.08); p('AIが読み取っています…', k); }, 700);
-              try { return await callAI({ system: SYSTEM, content: [{ type: 'text', text: `${todayText()}${mode === 'alt' ? 'これは「予備ルート」です。すべて is_alternate=true にしてください。' : ''}\n次の文章から旅程の予定を取り出してください（source_image は 0）。\n---\n${text}` }], schema: SCHEMA, effort: 'low' }); }
-              finally { clearInterval(tm); }
-            },
-          });
-          const st = await runReaders(prog, readers);
-          // 表の形の旅程表は端末の読み取りが正確。それ以外は AI を初めの選択にする
-          const out = finishReading(st, { mode, target, priority: looksLikeSchedule(text) ? 'local' : 'ai' });
-          if (!out) { prog.innerHTML += '<div class="small" style="color:var(--orange);margin-top:10px">予定を見つけられませんでした。日付と時刻が入っているか確かめてください。</div>'; e.target.disabled = false; return; }
-          close();
-          setTimeout(() => review(out.items, out.name, target, { alternate: mode === 'alt', sources: out.sources }), 300);
-        } catch (err) { prog.innerHTML = `<div class="small" style="color:var(--red)">${esc(friendlyError(err))}</div>`; e.target.disabled = false; }
-      };
-      setTimeout(() => ta.focus(), 450);
-    },
-  });
+// ===== 取り込む（文字・写真・PDF をまとめて） =====
+// 予約メール・乗換案内・旅程表・メモの文字、スクショ・写真、PDF を一度に入れられる。何が入っているかは自動で見分ける
+// 時刻表っぽいもの：時刻がたくさん並ぶのに「発・着」が少ない／「6 | 05 25 45」のような時と分の表
+export function looksTimetable(t) {
+  const s = String(t || '');
+  const times = (s.match(/\b\d{1,2}[:：]\d{2}\b/g) || []).length;
+  const hourRows = s.split('\n').filter((l) => /^\s*(?:[01]?\d|2[0-4])\s*(?:時|\||｜|\s)\s*\d{2}(?:\s*[a-zA-Zア-ン]?\s+\d{2}){2,}/.test(l)).length;
+  const marks = (s.match(/発|着|→|チェックイン|予約/g) || []).length;
+  return hourRows >= 4 || (times >= 24 && marks < times / 8);
+}
+// 中身の見分け（画面に「○○として読みます」と出す）
+function kindOf(t) {
+  const s = String(t || '').trim();
+  if (!s) return '';
+  if (looksTimetable(s)) return '時刻表（資料に保存）';
+  if (looksLikeSchedule(s)) return '旅程表';
+  if (/予約番号|予約確認|ご予約|チェックイン|搭乗|便名|eチケット|確認番号|Booking|Reservation/i.test(s)) return '予約確認';
+  if (/乗換|乗り換え|番線|発\s*$|着\s*$|\d{1,2}[:：]\d{2}\s*発|運賃|IC優先/m.test(s)) return '乗換案内';
+  return 'メモ';
+}
+// 表示中の旅の日付を、読み取りの手がかりにする
+function tripHint(mode) {
+  const t = currentTrip();
+  if (!t || mode === 'alt') return '';
+  const ev = events(t).filter((e) => e.at);
+  const a = ev[0]?.at || (t.start && parseLocal(t.start + 'T00:00')), z = ev[ev.length - 1]?.at || (t.end && parseLocal(t.end + 'T00:00'));
+  if (!a) return '';
+  return `表示中の旅「${t.name}」は ${a.getMonth() + 1}/${a.getDate()}${z ? `〜${z.getMonth() + 1}/${z.getDate()}` : ''}。日付の書いていない予定は、この旅の日付から判断してください。`;
 }
 
-// ===== 取り込み画面 =====
-export function openImport({ alternate = false, targetId = null }) {
-  const s = store.data.settings;
+export function openCapture({ alternate = false, targetId = null, initialText = '', files: initFiles = [] } = {}) {
   const files = [];
-  let mode = alternate ? 'alt' : 'main';
-  let target = targetId;
-  let how = readModeOf();
-  let hint = '';
+  let text = initialText, mode = alternate ? 'alt' : 'main', target = targetId, how = readModeOf(), hint = '';
   let onPaste = null;
   const addFiles = (list) => { for (const f of list) if (f && (isPdf(f) || /^image\//.test(f.type || 'image/'))) files.push({ file: f, url: isPdf(f) ? '' : URL.createObjectURL(f), pdf: isPdf(f), name: f.name }); };
+  addFiles(initFiles);
   sheet({
-    title: alternate ? '予備ルートを取り込む' : '写真・PDFから取り込む', left: 'キャンセル',
+    title: alternate ? '予備ルートを取り込む' : '取り込む', left: 'キャンセル',
     onClose: () => { document.removeEventListener('paste', onPaste); },
     build(body, close) {
+      const count = () => (text.trim() ? 1 : 0) + files.length;
+      const goLabel = () => (count() ? `${I.sparkles}読み取る${count() > 1 ? `（${count()}件）` : ''}` : '文字・写真・PDFを入れてください');
+      const kindHTML = () => [text.trim() && kindOf(text), files.filter((f) => f.pdf).length && `PDF ${files.filter((f) => f.pdf).length}件`, files.filter((f) => !f.pdf).length && `写真 ${files.filter((f) => !f.pdf).length}枚`].filter(Boolean).map((k) => `<span>${k}</span>`).join('');
+      const refresh = () => { const g = $('#cap-go', body); if (g) { g.innerHTML = goLabel(); g.disabled = !count(); } const k = $('#cap-kind', body); if (k) k.innerHTML = kindHTML(); };
       const draw = () => {
         const trip = currentTrip();
-        const moves = trip ? events(trip).filter((e) => e.kind !== 'out') : [];
+        const moves = trip ? events(trip).filter((e) => e.kind !== 'out' && TRANSPORT.has(e.it.type)) : [];
         body.innerHTML = `
-          <div class="drop-pair">
-            <label class="drop" id="imp-drop"><span class="drop-ico">${I.photo}</span><span class="drop-title">写真・スクショ</span><span class="drop-sub">予約画面・乗換案内など<br>複数まとめてOK</span>
-              <input type="file" accept="image/*" multiple hidden id="imp-file"></label>
-            <label class="drop pdf"><span class="drop-ico">${I.note}</span><span class="drop-title">PDFファイル</span><span class="drop-sub">旅程表・予約確認の PDF<br>いちばん正確に読めます</span>
-              <input type="file" accept="application/pdf,.pdf" multiple hidden id="imp-pdf"></label>
+          <div class="cap-box">
+            <textarea id="cap-text" rows="6" placeholder="ここに貼り付け&#10;予約メール・乗換案内の結果・旅程表・メモなど、形式は自由です">${esc(text)}</textarea>
+            <div class="cap-kind" id="cap-kind">${kindHTML()}</div>
+            <div class="cap-tools">
+              <button id="cap-clip">${I.copy}<span>貼り付け</span></button>
+              <label>${I.photo}<span>写真・スクショ</span><input type="file" accept="image/*" multiple hidden id="cap-img"></label>
+              <label>${I.note}<span>PDF</span><input type="file" accept="application/pdf,.pdf" multiple hidden id="cap-pdf"></label>
+            </div>
           </div>
-          <button class="btn small secondary" id="imp-clip" style="margin-top:10px;width:100%">${I.copy}コピーした画像を貼り付け</button>
-          <div class="thumbs" id="imp-th"></div>
-          <div class="section-title">取り込み方</div>
-          <div class="segment" id="imp-mode"><button data-v="main" class="${mode === 'main' ? 'active' : ''}">本命のルート・予約</button><button data-v="alt" class="${mode === 'alt' ? 'active' : ''}">予備ルート</button></div>
-          ${mode === 'alt' && moves.length ? `<div class="list"><div class="row"><div style="flex:none">どの予定の予備？</div><select id="imp-target"><option value="">自動で判断</option>${moves.map((e) => `<option value="${e.it.id}" ${target === e.it.id ? 'selected' : ''}>${e.at ? hm(e.at) : ''} ${esc(e.it.title || '')} ${esc(e.it.from || '')}→${esc(e.it.to || '')}</option>`).join('')}</select></div></div>` : ''}
-          <div class="list" style="margin-top:12px"><div class="row"><div style="flex:none">補足</div><input type="text" id="imp-hint" class="left" placeholder="例：10月3日の出発です（任意）" value="${esc(hint)}"></div></div>
-          ${aiOn() ? readModeHTML('imp-how', how) : `<div class="section-foot">端末の中で読み取ります（無料・読み取り後に直せます）。<b>PDF</b>は文字がそのまま入っているので、いちばん正確です。写真の文字読み取りは、色付きの表や小さい字で間違えることがあります。「設定」で Gemini か Claude の API キーを入れると、写真もずっと正確に読めます（Gemini は無料枠あり）。</div>`}
-          <div style="margin-top:16px"><button class="btn" id="imp-go" ${files.length ? '' : 'disabled'}>${I.sparkles}${files.length ? `${files.length}件を読み取る` : '写真かPDFを選んでください'}</button></div>
-          <div id="imp-prog" style="margin-top:14px"></div>`;
-        const th = $('#imp-th', body);
+          <div class="thumbs" id="cap-th"></div>
+          <div class="list grouped" style="margin-top:10px">
+            <div class="row"><div class="grow">予備ルートとして取り込む<div class="sub">乗り遅れた時などの別ルート</div></div>${switchHTML('', mode === 'alt', 'id="cap-alt"')}</div>
+            ${mode === 'alt' && moves.length ? `<div class="row"><div style="flex:none">どの予定の予備？</div><select id="cap-target"><option value="">自動で判断</option>${moves.map((e) => `<option value="${e.it.id}" ${target === e.it.id ? 'selected' : ''}>${e.at ? hm(e.at) : ''} ${esc(e.it.title || '')} ${esc(e.it.from || '')}→${esc(e.it.to || '')}</option>`).join('')}</select></div>` : ''}
+            <div class="row"><div style="flex:none">補足</div><input type="text" id="cap-hint" class="left" placeholder="例：10月3日の出発です（任意）" value="${esc(hint)}"></div>
+          </div>
+          ${aiOn() ? readModeHTML('cap-how', how) : '<div class="section-foot">端末の中で読み取ります（無料）。PDFの旅程表は正確に読めます。「設定」で AI のキーを入れると、写真やメモも正確に読めて、旅程の提案もできます。</div>'}
+          <button class="btn" id="cap-go" style="margin-top:12px" ${count() ? '' : 'disabled'}>${goLabel()}</button>
+          <div id="cap-prog" style="margin-top:12px"></div>`;
+        const th = $('#cap-th', body);
         files.forEach((f, i) => {
           const d = document.createElement('div');
           d.className = f.pdf ? 'th pdf' : 'th';
@@ -377,31 +360,43 @@ export function openImport({ alternate = false, targetId = null }) {
           th.append(d);
         });
         $$('[data-rm]', body).forEach((b) => b.onclick = (e) => { e.preventDefault(); if (files[+b.dataset.rm].url) URL.revokeObjectURL(files[+b.dataset.rm].url); files.splice(+b.dataset.rm, 1); haptic(); draw(); });
-        $('#imp-file', body).onchange = (e) => { addFiles(e.target.files); draw(); };
-        $('#imp-pdf', body).onchange = (e) => { addFiles(e.target.files); draw(); };
-        const drop = $('#imp-drop', body);
-        drop.ondragover = (e) => { e.preventDefault(); };
-        drop.ondrop = (e) => { e.preventDefault(); addFiles(e.dataTransfer?.files || []); draw(); };
-        $('#imp-clip', body).onclick = async () => {
+        const ta = $('#cap-text', body);
+        ta.oninput = () => { text = ta.value; refresh(); };
+        $('#cap-img', body).onchange = (e) => { addFiles(e.target.files); draw(); };
+        $('#cap-pdf', body).onchange = (e) => { addFiles(e.target.files); draw(); };
+        $('#cap-clip', body).onclick = async () => {
+          // 画像がコピーされていれば画像、文字なら文字を入れる
           try {
             const list = await navigator.clipboard.read();
             let n = 0;
-            for (const ci of list) for (const t of ci.types) if (t.startsWith('image/')) { const b = await ci.getType(t); addFiles([new File([b], `clip-${Date.now()}.${t.split('/')[1]}`, { type: t })]); n++; }
-            if (n) { toast(`${n}枚貼り付けました`); draw(); } else toast('コピーされた画像がありません');
-          } catch { toast('貼り付けできませんでした。写真を選んでください'); }
+            for (const ci of list) {
+              for (const t of ci.types) {
+                if (t.startsWith('image/')) { const b = await ci.getType(t); addFiles([new File([b], `clip-${Date.now()}.${t.split('/')[1]}`, { type: t })]); n++; }
+                else if (t === 'text/plain' && !n) { const s = await (await ci.getType(t)).text(); if (s.trim()) { text = text.trim() ? `${text}\n\n${s}` : s; n++; } }
+              }
+            }
+            if (n) { toast('貼り付けました'); draw(); } else toast('コピーされたものがありません');
+          } catch {
+            try { const s = await navigator.clipboard.readText(); if (s.trim()) { text = text.trim() ? `${text}\n\n${s}` : s; draw(); toast('貼り付けました'); return; } } catch {}
+            ta.focus(); toast('欄を長押しして「ペースト」を選んでください');
+          }
         };
-        $('#imp-hint', body).oninput = (e) => { hint = e.target.value; };
-        if ($('#imp-how', body)) segment($('#imp-how', body), (v) => { how = v; store.data.settings.readMode = v; store.save(); draw(); });
-        segment($('#imp-mode', body), (v) => { mode = v; draw(); });
-        $('#imp-target', body)?.addEventListener('change', (e) => { target = e.target.value || null; });
-        $('#imp-go', body).onclick = () => run(body, close, files, mode, target, hint, how);
+        $('#cap-hint', body).oninput = (e) => { hint = e.target.value; };
+        $('#cap-alt', body).onchange = (e) => { mode = e.target.checked ? 'alt' : 'main'; draw(); };
+        $('#cap-target', body)?.addEventListener('change', (e) => { target = e.target.value || null; });
+        if ($('#cap-how', body)) segment($('#cap-how', body), (v) => { how = v; store.data.settings.readMode = v; store.save(); draw(); });
+        $('#cap-go', body).onclick = () => run(body, close, { text, files, mode, target, hint, how });
       };
-      onPaste = (e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { addFiles(fs); draw(); } };
+      onPaste = (e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); draw(); } };
       document.addEventListener('paste', onPaste);
       draw();
+      if (!files.length && !text) setTimeout(() => $('#cap-text', body)?.focus(), 450);
     },
   });
 }
+// 前からの呼び出し口（どちらも同じ「取り込む」画面を開く）
+export const openImport = (o = {}) => openCapture(o);
+export const openPaste = (o = {}) => openCapture(o);
 
 // ===== 複数の読み取りを同時に行う =====
 // 読み方：both=AIと端末の両方（おすすめ） / ai=AIだけ / local=端末だけ
@@ -457,41 +452,48 @@ function finishReading(st, { mode, target, priority, keys = [], rawText = '' }) 
   return { items, name, text, sources: ok.map((r) => r.label) };
 }
 
-async function run(body, close, files, mode, target, hint, how) {
-  const prog = $('#imp-prog', body);
-  const go = $('#imp-go', body);
+async function run(body, close, { text = '', files = [], mode = 'main', target = null, hint = '', how = 'local' }) {
+  const prog = $('#cap-prog', body);
+  const go = $('#cap-go', body);
   go.disabled = true;
   const say = (msg, p) => { prog.innerHTML = `<div class="hstack small"><span class="spinner"></span>${esc(msg)}</div>${p != null ? `<div class="progress" style="margin-top:8px"><i style="width:${Math.round(Math.min(1, p) * 100)}%"></i></div>` : ''}`; };
+  const ctx = [hint, tripHint(mode)].filter(Boolean).join('\n');
   try {
     // PDF は先に文字を取り出す（文字の入っていない PDF はページを画像にする）
-    const pdfTexts = [], pdfImages = [], pdfViews = [];
-    for (let i = 0; i < files.length; i++) {
-      if (!files[i].pdf) continue;
-      say(`PDFを読んでいます… ${files[i].name || ''}`, 0.05);
-      const res = await readPdf(files[i].file, (p) => say('PDFを読んでいます…', 0.05 + p * 0.9));
-      if (res.scanned) pdfImages.push(...res.images); else pdfTexts.push(res.text);
-      files[i].thumbs = await pdfThumb(files[i].file);
-      pdfViews.push(files[i].thumbs?.[0] || null);
+    const pdfTexts = [], pdfImages = [], pdfViews = [], timetables = [];
+    for (const f of files.filter((x) => x.pdf)) {
+      say(`PDFを読んでいます… ${f.name || ''}`, 0.05);
+      const res = await readPdf(f.file, (p) => say('PDFを読んでいます…', 0.05 + p * 0.9));
+      if (res.scanned) pdfImages.push(...res.images);
+      else if (looksTimetable(res.text)) timetables.push({ file: f.file, title: (f.name || '時刻表').replace(/\.pdf$/i, '') });
+      else pdfTexts.push(res.text);
+      f.thumbs = await pdfThumb(f.file);
+      pdfViews.push(f.thumbs?.[0] || null);
     }
-    const images = [...files.filter((f) => !f.pdf).map((f) => f.file), ...pdfImages];
-    // 予定に付ける画像（写真ごとに1枚）
-    say('画像を準備しています…', 0);
+    const imageFiles = files.filter((f) => !f.pdf).map((f) => f.file);
+    const images = [...imageFiles, ...pdfImages];
+    say('準備しています…', 0);
     const imgViews = [];
-    for (let i = 0; i < images.length; i++) { imgViews.push((await prepForAI(images[i], { maxSide: 1568 })).view); say('画像を準備しています…', (i + 1) / images.length); }
+    for (let i = 0; i < images.length; i++) { imgViews.push((await prepForAI(images[i], { maxSide: 1568 })).view); say('準備しています…', (i + 1) / images.length); }
     const views = [...imgViews, ...pdfViews.filter(Boolean)];
+    const pasted = text.trim() && !looksTimetable(text) ? text.trim() : '';
+    if (text.trim() && !pasted) timetables.push({ text: text.trim(), title: '時刻表（貼り付け）' });
     let ocrText = '';
     const readers = [];
     if (how !== 'ai') readers.push({
       src: 'local', label: '端末の読み取り',
       run: async (p) => {
-        const texts = [...pdfTexts];
+        const texts = [pasted, ...pdfTexts].filter(Boolean);
         for (let i = 0; i < images.length; i++) {
           const label = `文字を読み取っています… ${i + 1}/${images.length}枚`;
           p(label, i / images.length);
-          texts.push(await ocr(images[i], (q, kind) => p(kind === 'load' ? '準備しています…（初回だけ少し時間がかかります）' : label, (i + q) / images.length)));
+          const t = await ocr(images[i], (q, kind) => p(kind === 'load' ? '準備しています…（初回だけ少し時間がかかります）' : label, (i + q) / images.length));
+          // 時刻表の写真は予定にせず、資料に回す
+          if (looksTimetable(t) && i < imageFiles.length) { if (!timetables.some((x) => x.file === images[i])) timetables.push({ file: images[i], title: '時刻表' }); continue; }
+          texts.push(t);
         }
         ocrText = texts.join('\n\n');
-        const hinted = hint ? texts.map((t, i) => (i === 0 ? `${hint}\n${t}` : t)) : texts;
+        const hinted = ctx ? texts.map((t, i) => (i === 0 ? `${ctx}\n${t}` : t)) : texts;
         const its = itemsFromOcrTexts(hinted);
         return { trip_name: its.title || '', items: its, text: ocrText };
       },
@@ -499,41 +501,59 @@ async function run(body, close, files, mode, target, hint, how) {
     if (how !== 'local' && aiOn()) readers.push({
       src: 'ai', label: aiName(),
       run: async (p) => {
-        p('画像を準備しています…', 0.05);
+        p('準備しています…', 0.05);
         const prep = images.length ? await prepareImages(images, (q) => p('画像を準備しています…', 0.05 + q * 0.2)) : { content: [] };
         p('AIが読み取っています…（10〜60秒ほど）', 0.3);
-        // 時間がかかる間も進んでいる感じを出す
         let k = 0.3; const tm = setInterval(() => { k = Math.min(0.92, k + (0.95 - k) * 0.06); p('AIが読み取っています…（10〜60秒ほど）', k); }, 800);
         try {
-          const content = [...prep.content, ...pdfTexts.map((t, i) => ({ type: 'text', text: `PDF${i + 1}の文字:\n${t}` }))];
-          return await askAI(content, hint, mode === 'alt');
+          const content = [...prep.content, ...pdfTexts.map((t, i) => ({ type: 'text', text: `PDF${i + 1}の文字:\n${t}` })), ...(pasted ? [{ type: 'text', text: `貼り付けた文字:\n${pasted}` }] : [])];
+          const r = await askAI(content, ctx, mode === 'alt');
+          // AI が時刻表と見分けた画像は資料に回す
+          for (const tt of r.timetables || []) { const f = images[(tt.source_image || 0) - 1]; if (f && !timetables.some((x) => x.file === f)) timetables.push({ file: f, title: tt.title || '時刻表' }); }
+          return r;
         } finally { clearInterval(tm); }
       },
     });
-    const st = await runReaders(prog, readers);
-    // 食い違った時の初めの選択：PDF の文字だけなら端末（正確）、写真があれば AI
-    const priority = images.length ? 'ai' : 'local';
+    const st = readers.length ? await runReaders(prog, readers) : [];
+    // 食い違った時の初めの選択：写真があれば AI、文字や PDF の旅程表は端末（正確）
+    const priority = images.length ? 'ai' : (looksLikeSchedule(pasted || pdfTexts[0] || '') ? 'local' : 'ai');
     const keys = [];
     const ready = st.some((r) => r.state === 'ok' && r.res.items.length);
     if (ready) for (const b of views) { const k = 'img:' + uid(); await blobs.put(k, b); keys.push(k); }
     const out = finishReading(st, { mode, target, priority, keys, rawText: ocrText });
     if (!out) {
+      if (timetables.length) {
+        // 予定は無く、時刻表だけ → 資料に保存して終わり
+        const msg = await saveTimetables(ensureTrip(), timetables);
+        close(); renderTrip(); toast(msg || '保存できませんでした', 3500);
+        return;
+      }
       const errs = st.filter((r) => r.state === 'err');
-      prog.innerHTML += `<div class="small" style="color:var(--orange);margin-top:10px">予定を見つけられませんでした。${ocrText ? '読み取った文字を直してから、もう一度読み取れます。' : errs.length ? '' : '手入力で追加するか、別の画像を試してください。'}</div>
-        <div class="stack" style="margin-top:10px">${ocrText ? `<button class="btn secondary" id="imp-fix">${I.edit}読み取った文字を見て直す</button>` : ''}
-        ${how !== 'local' && errs.some((r) => r.src === 'ai') && !readers.some((r) => r.src === 'local') ? `<button class="btn secondary" id="imp-local">端末の中で読み取る（AIを使わない）</button>` : ''}</div>`;
-      $('#imp-fix', body)?.addEventListener('click', () => { close(); setTimeout(() => openPaste({ alternate: mode === 'alt', targetId: target, initialText: ocrText }), 300); });
-      $('#imp-local', body)?.addEventListener('click', () => run(body, close, files, mode, target, hint, 'local'));
+      prog.innerHTML += `<div class="small" style="color:var(--orange);margin-top:10px">予定を見つけられませんでした。${ocrText ? '読み取った文字を直してから、もう一度読み取れます。' : errs.length ? '' : '日付と時刻が入っているか確かめてください。'}</div>
+        ${ocrText ? `<div class="stack" style="margin-top:10px"><button class="btn secondary" id="cap-fix">${I.edit}読み取った文字を見て直す</button></div>` : ''}`;
+      $('#cap-fix', body)?.addEventListener('click', () => { close(); setTimeout(() => openCapture({ alternate: mode === 'alt', targetId: target, initialText: ocrText }), 300); });
       go.disabled = false;
       return;
     }
     close();
-    setTimeout(() => review(out.items, out.name, target, { rawText: out.text, alternate: mode === 'alt', sources: out.sources }), 350);
+    setTimeout(() => review(out.items, out.name, target, { rawText: out.text, alternate: mode === 'alt', sources: out.sources, timetables }), 300);
   } catch (e) {
     console.error(e);
     prog.innerHTML = `<div class="small" style="color:var(--red)">${esc(friendlyError(e))}</div>`;
     go.disabled = false;
   }
+}
+// 時刻表を旅の資料に保存（貼り付けた文字の時刻表はメモに）
+async function saveTimetables(trip, list) {
+  const { addDocs } = await import('./docs.js');
+  let n = 0;
+  const fs = list.filter((x) => x.file).map((x) => new File([x.file], `${x.title || '時刻表'}${isPdf(x.file) ? '.pdf' : '.jpg'}`, { type: x.file.type || (isPdf(x.file) ? 'application/pdf' : 'image/jpeg') }));
+  let d = 0, m = 0;
+  if (fs.length) d = await addDocs(trip, fs, 'time');
+  for (const x of list.filter((y) => y.text)) { store.data.memos.unshift({ id: uid(), title: x.title, text: x.text, pinned: false, updated: Date.now() }); m++; }
+  store.save();
+  n = d + m;
+  return n ? `時刻表${n}件を${[d && '「資料」', m && '「メモ」'].filter(Boolean).join('と')}に保存しました` : '';
 }
 
 // 読み取り結果の確認
@@ -541,7 +561,7 @@ async function run(body, close, files, mode, target, hint, how) {
 //  ・表示中の旅に似た予定がある時は「上書き／両方残す／追加しない」を選べる
 const fmtVal = (k, v) => (k === 'type' ? (TYPES[v]?.name || v) : (k === 'start' || k === 'end') && parseLocal(v) ? `${parseLocal(v).getMonth() + 1}/${parseLocal(v).getDate()} ${hm(parseLocal(v))}` : v || '—');
 const clean = (i) => { const r = {}; for (const [k, v] of Object.entries(i)) if (!k.startsWith('_')) r[k] = v; return r; };
-export function review(items, tripName, target, { rawText = '', alternate = false, sources = [] } = {}) {
+export function review(items, tripName, target, { rawText = '', alternate = false, sources = [], timetables = [] } = {}) {
   const cur = currentTrip();
   // 旅の名前が読めた・今の旅が空でない時は、新しい旅として追加するのを初めの選択にする
   let dest = target || (cur && !cur.items.length) ? 'cur' : tripName || !cur ? 'new' : 'cur';
@@ -567,7 +587,10 @@ export function review(items, tripName, target, { rawText = '', alternate = fals
       if (!chosen.length) return;
       let trip;
       if (dest === 'new' || !currentTrip()) {
-        trip = { id: uid(), name: tripName || '新しい旅', items: [] };
+        // 名前が読めなかった時は、行き先から名前をつける（例「平湯温泉への旅」）
+        const go = chosen.filter((i) => !i._alt).sort((a, b) => (a.start || '9').localeCompare(b.start || '9'));
+        const place = go.find((i) => TRANSPORT.has(i.type) && i.to)?.to || go.find((i) => i.type === 'hotel')?.title || '';
+        trip = { id: uid(), name: tripName || (place ? `${place.slice(0, 14)}への旅` : '新しい旅'), items: [] };
         store.data.trips.push(trip); store.data.currentTrip = trip.id;
       } else trip = ensureTrip();
       const mains = chosen.filter((i) => !i._alt);
@@ -590,9 +613,12 @@ export function review(items, tripName, target, { rawText = '', alternate = fals
         else { trip.items.push(...legs); added += legs.length; }
       }
       const fixed = autoFix(trip);
+      if (timetables.length) saveTimetables(trip, timetables).then((msg) => msg && setTimeout(() => toast(msg, 3000), 4800));
       store.save(); renderTrip(); haptic();
       const msg = [added && `${added}件を追加`, over && `${over}件を上書き`, altN && `予備ルート${altN}件を追加`].filter(Boolean).join('、');
-      toast(msg ? msg + 'しました' + (fixed ? `。推定の時刻を${fixed}件、流れに合わせて直しました` : '') : '変更はありません（同じ予定はそのままにしました）', 3500);
+      // 取り込んだあと、AI で流れを整えるのをすすめる
+      const tidy = aiOn() && !alternate ? { label: 'AIで整える', run: () => import('./assist.js').then((m) => m.openAssist({ preset: 'tidy' })) } : null;
+      toast(msg ? msg + 'しました' + (fixed ? `。推定の時刻を${fixed}件直しました` : '') : '変更はありません（同じ予定はそのままにしました）', 4500, tidy);
       document.querySelector('#tabbar [data-tab="trip"]')?.click();
     },
     build(body, close) {
