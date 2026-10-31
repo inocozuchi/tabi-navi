@@ -16,6 +16,15 @@
   --shadow: 0 6px 24px rgba(0,0,0,.08);
   --radius: 14px;
   --tabbar-h: 54px;
+  /* 動きの共通トークン（CLAUDE.md の「UI・アニメーションの基準」） */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);        /* 出る・消える・押す */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);    /* 画面の上で動く・形が変わる */
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);     /* シート・ページ（iOS の引き出し） */
+  --dur-press: 140ms;     /* 押した時の反応 */
+  --dur-modal-in: 340ms;  /* シート・ページが出る */
+  --dur-modal-out: 230ms; /* 閉じる（出るより速く） */
+  --dur-alert-in: 200ms;  /* 確認ダイアログが出る */
+  --dur-alert-out: 140ms;
   --sat: env(safe-area-inset-top, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
   color-scheme: light;
@@ -385,15 +394,16 @@ input::placeholder, textarea::placeholder { color: var(--label3); }
 .mission input { width: 100%; height: 52px; border-radius: 14px; border: 0; text-align: center; font-size: 26px; background: rgba(255,255,255,.95); color: #000; }
 
 /* ===== 重ね画面（シート・ページ） ===== */
-.backdrop { position: absolute; inset: 0; z-index: 100; background: rgba(0,0,0,.4); opacity: 0; transition: opacity .21s; }
-.backdrop.show { opacity: 1; }
+.backdrop { position: absolute; inset: 0; z-index: 100; background: rgba(0,0,0,.3); opacity: 0; transition: opacity var(--dur-modal-out) ease; }
+.backdrop.show { opacity: 1; transition-duration: var(--dur-modal-in); }
 .sheet {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 101; max-height: calc(100% - var(--sat) - 12px);
   background: var(--bg); border-radius: 14px 14px 0 0; display: flex; flex-direction: column;
-  transform: translateY(100%); transition: transform .29s cubic-bezier(.2,.9,.25,1); box-shadow: 0 -10px 40px rgba(0,0,0,.2);
+  /* 閉じる時（.show が外れた時）はこちらの速い方。開く時は .show 側の長い方 */
+  transform: translateY(100%); transition: transform var(--dur-modal-out) var(--ease-drawer);
   max-width: 720px; margin: 0 auto;
 }
-.sheet.show { transform: none; }
+.sheet.show { transform: none; transition-duration: var(--dur-modal-in); }
 .sheet .grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--label3); margin: 6px auto 0; flex: none; }
 .sheet .sheet-head { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; padding: 8px 16px 10px; flex: none; }
 .sheet .sheet-head .l { justify-self: start; }
@@ -404,9 +414,9 @@ input::placeholder, textarea::placeholder { color: var(--label3); }
 .sheet .sheet-body { overflow-y: auto; padding: 4px 16px calc(var(--sab) + 24px); -webkit-overflow-scrolling: touch; }
 .page {
   position: absolute; inset: 0; z-index: 90; background: var(--bg); display: flex; flex-direction: column;
-  transform: translateX(100%); transition: transform .28s cubic-bezier(.2,.9,.25,1); box-shadow: -10px 0 30px rgba(0,0,0,.15);
+  transform: translateX(100%); transition: transform var(--dur-modal-out) var(--ease-drawer); box-shadow: -1px 0 0 var(--sep);
 }
-.page.show { transform: none; }
+.page.show { transform: none; transition-duration: var(--dur-modal-in); }
 .page .page-head { display: flex; align-items: center; gap: 8px; height: calc(var(--sat) + 44px); padding: var(--sat) 8px 0; background: var(--bar); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); border-bottom: .5px solid var(--sep); flex: none; }
 .page .page-head .back { color: var(--blue); display: flex; align-items: center; gap: 2px; font-size: 17px; min-width: 80px; }
 .page .page-head .back svg { font-size: 24px; stroke-width: 2.4; }
@@ -416,8 +426,8 @@ input::placeholder, textarea::placeholder { color: var(--label3); }
 .page .page-body > * { max-width: 680px; margin-left: auto; margin-right: auto; }
 
 /* 確認ダイアログ */
-.alert { position: fixed; z-index: 500; left: 50%; top: 50%; width: 270px; transform: translate(-50%,-50%) scale(1.15); opacity: 0; transition: transform .17s cubic-bezier(.2,1.3,.4,1), opacity .14s; background: var(--bar); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px); border-radius: 14px; overflow: hidden; text-align: center; }
-.alert.show { transform: translate(-50%,-50%) scale(1); opacity: 1; }
+.alert { position: fixed; z-index: 500; left: 50%; top: 50%; width: 270px; transform: translate(-50%,-50%) scale(.96); opacity: 0; transition: opacity var(--dur-alert-out) var(--ease-out), transform var(--dur-alert-out) var(--ease-out); background: var(--bar); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px); border-radius: 14px; overflow: hidden; text-align: center; }
+.alert.show { transform: translate(-50%,-50%) scale(1); opacity: 1; transition-duration: var(--dur-alert-in); }
 .alert .body { padding: 18px 16px 16px; }
 .alert .body b { display: block; font-size: 17px; margin-bottom: 4px; }
 .alert .body p { margin: 0; font-size: 13px; }
@@ -427,8 +437,8 @@ input::placeholder, textarea::placeholder { color: var(--label3); }
 .alert .btns button.destructive { color: var(--red); }
 
 /* 通知（トースト） */
-#toast { position: fixed; left: 50%; top: calc(var(--sat) + 10px); z-index: 600; transform: translate(-50%, -120px); transition: transform .32s cubic-bezier(.2,1.3,.4,1); background: var(--bar); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); padding: 10px 18px; border-radius: 22px; font-size: 15px; font-weight: 500; box-shadow: 0 8px 30px rgba(0,0,0,.2); width: max-content; max-width: calc(100vw - 32px); text-align: center; line-height: 1.4; }
-#toast.show { transform: translate(-50%, 0); }
+#toast { position: fixed; left: 50%; top: calc(var(--sat) + 10px); z-index: 600; transform: translate(-50%, -120px); transition: transform var(--dur-modal-out) var(--ease-out); background: var(--bar); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); padding: 10px 18px; border-radius: 22px; font-size: 15px; font-weight: 500; box-shadow: 0 8px 30px rgba(0,0,0,.2); width: max-content; max-width: calc(100vw - 32px); text-align: center; line-height: 1.4; }
+#toast.show { transform: translate(-50%, 0); transition-duration: 300ms; }
 
 /* 取り込み */
 .drop {
@@ -474,7 +484,15 @@ input::placeholder, textarea::placeholder { color: var(--label3); }
 .big-num { font-size: 40px; font-weight: 300; font-variant-numeric: tabular-nums; text-align: right; overflow: hidden; text-overflow: ellipsis; }
 
 @media (min-width: 560px) { .grid { grid-template-columns: repeat(4, 1fr); } }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; transition-duration: .01ms !important; }
+  /* 重ね画面は動かさず、薄く出し入れするだけ（何が起きたかは分かるように） */
+  .sheet, .page, .alert { transform: none !important; opacity: 0; transition: opacity 200ms ease !important; }
+  .alert { transform: translate(-50%,-50%) !important; }
+  .sheet.show, .page.show, .alert.show { opacity: 1; }
+  .backdrop { transition: opacity 200ms ease !important; }
+  body.sheet-open #app, body.page-open #app { transform: none !important; }
+}
 
 /* ===== 見た目のルール（全画面共通） =====
    タイトル … .large-title（画面）／ .section-head（画面の中の大見出し）／ .section-title（灰色の小見出し）
@@ -584,7 +602,7 @@ button.now-jump:active:not([disabled]) { transform: translateY(-100%) scale(.94)
 .tile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
 .tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 14px; min-height: 112px; border-radius: 18px; background: var(--bg2); box-shadow: var(--shadow); text-align: left; animation: fadeUp .32s calc(.12s + var(--i) * 50ms) both; transition: transform .13s cubic-bezier(.3,1.4,.5,1); }
 .tile:active { transform: scale(.95); }
-.tile .tile-ico { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; color: #fff; background: var(--c); margin-bottom: 8px; box-shadow: 0 6px 14px color-mix(in srgb, var(--c) 35%, transparent); }
+.tile .tile-ico { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; color: #fff; background: var(--c); margin-bottom: 8px; }
 .tile .tile-ico svg { width: 22px; height: 22px; }
 .tile b { font-size: 16px; }
 .tile .tile-sub { font-size: 12px; color: var(--label2); }
@@ -607,7 +625,7 @@ button.now-jump:active:not([disabled]) { transform: translateY(-100%) scale(.94)
 .tile-row::-webkit-scrollbar { display: none; }
 .tile-s { flex: none; width: 74px; display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--label); scroll-snap-align: start; animation: fadeUp .28s calc(.12s + var(--i) * 40ms) both; transition: transform .13s cubic-bezier(.3,1.4,.5,1); white-space: nowrap; }
 .tile-s:active { transform: scale(.9); }
-.tile-s .tile-ico { width: 54px; height: 54px; border-radius: 16px; display: grid; place-items: center; color: #fff; background: var(--c); box-shadow: 0 6px 14px color-mix(in srgb, var(--c) 30%, transparent); }
+.tile-s .tile-ico { width: 54px; height: 54px; border-radius: 16px; display: grid; place-items: center; color: #fff; background: var(--c); }
 .tile-s .tile-ico svg { width: 26px; height: 26px; }
 .day-tabs.sticky { position: sticky; top: calc(-1 * (var(--sat) + 10px)); z-index: 6; margin-left: -16px; margin-right: -16px; padding: calc(var(--sat) + 10px) 16px 8px; background: color-mix(in srgb, var(--bg) 82%, transparent); -webkit-backdrop-filter: saturate(180%) blur(18px); backdrop-filter: saturate(180%) blur(18px); }
 .hourly:empty { display: none; }
@@ -940,15 +958,12 @@ button.row:active, label.row:active, .row.tappable:active { background: var(--fi
 
 /* ===== iOS のような重なりの動き ===== */
 /* シートを開くと、うしろの画面が少し小さく奥へ下がる */
-#app { transition: transform .32s cubic-bezier(.2,.9,.25,1), border-radius .32s, filter .32s; transform-origin: 50% 100%; }
+/* 暗くするのは暗幕だけ（filter は動かさない）。角丸は動かさずに付け外しする */
+#app { transition: transform var(--dur-modal-out) var(--ease-drawer); transform-origin: 50% 100%; }
 body.sheet-open { background: #000; }
-body.sheet-open #app { transform: translateY(calc(var(--sat) * .5 + 8px)) scale(.92); border-radius: 14px; overflow: hidden; filter: brightness(.92); }
+body.sheet-open #app { transform: translateY(calc(var(--sat) * .5 + 8px)) scale(.93); border-radius: 14px; overflow: hidden; transition-duration: var(--dur-modal-in); }
 /* ページを開くと、うしろの画面が少し左へずれる（押し出し） */
-body.page-open #app { transform: translateX(-28%); filter: brightness(.88); }
-.backdrop { background: rgba(0,0,0,.28); }
-body.sheet-open .backdrop { background: rgba(0,0,0,.2); }
-.sheet { transition: transform .32s cubic-bezier(.2,.9,.25,1); }
-.page { transition: transform .32s cubic-bezier(.2,.9,.25,1); }
+body.page-open #app { transform: translateX(-28%); transition-duration: var(--dur-modal-in); }
 
 /* 1分ごとの描き直しでは、カードを動かし直さない */
 .view.settled .tl-item, .view.settled .card, .view.settled .trip-card, .view.settled .check-card, .view.settled .miss-card, .view.settled .tile, .view.settled .tile-s, .view.settled .hero, .view.settled .empty-card, .view.settled .start-card { animation: none; }
@@ -1122,18 +1137,17 @@ body { font-size: 15px; line-height: 1.3; letter-spacing: -.005em; }
 
 /* --- 動き --- */
 /* ほぼすべてのボタン：押すと少し縮み、離すとばねのように戻る */
-button, .btn, label.row, a.btn { transition: transform .16s cubic-bezier(.3,1.6,.5,1), background-color .15s, color .15s, opacity .15s; }
-button:active:not([disabled]), .btn:active, a.btn:active { transform: scale(.96); }
+button, .btn, label.row, a.btn { transition: transform var(--dur-press) var(--ease-out), background-color .15s ease, color .15s ease, opacity .15s ease; }
+button:active:not([disabled]), .btn:active, a.btn:active { transform: scale(.97); }
+/* シート・ページの見出しの文字ボタンは、iOS と同じく縮めずに薄くする */
+.sheet .sheet-head button:active:not([disabled]), .page .page-head .back:active { transform: none; opacity: .4; transition-duration: 0ms; }
 button.row:active, label.row:active { transform: scale(.985); }
 #tabbar button:active { transform: scale(.9); }
 .chip.on, .day-tab.active { animation: pop .26s cubic-bezier(.3,1.6,.5,1); }
 @keyframes pop { 0% { transform: scale(.92); } 100% { transform: scale(1); } }
 /* シートとページの中身は、上から順にふわっと出る */
-.sheet.show .sheet-body > *, .page.show .page-body > * { animation: rise .26s cubic-bezier(.2,.9,.25,1) both; }
-.sheet.show .sheet-body > *:nth-child(2), .page.show .page-body > *:nth-child(2) { animation-delay: .03s; }
-.sheet.show .sheet-body > *:nth-child(3), .page.show .page-body > *:nth-child(3) { animation-delay: .06s; }
-.sheet.show .sheet-body > *:nth-child(4), .page.show .page-body > *:nth-child(4) { animation-delay: .09s; }
-.sheet.show .sheet-body > *:nth-child(n+5), .page.show .page-body > *:nth-child(n+5) { animation-delay: .12s; }
+/* シート・ページの中身は動かさない（入れ物が動いているので、中まで動くと二重になり遅く感じる） */
+.sheet .list > .row, .page .list > .row, .sheet .rv-card, .sheet .tile, .page .doc-card { animation: none; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 /* 一覧の行も順に */
 .list > .row { animation: rise .24s cubic-bezier(.2,.9,.25,1) both; }

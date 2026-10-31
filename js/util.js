@@ -164,6 +164,11 @@ function stack(kind, d) {
   document.body.classList.toggle('page-open', depth.page > 0);
 }
 
+// 閉じる動きの長さ（app.css の --dur-modal-out と同じ）。消えてから要素を外す
+const MODAL_OUT = 230;
+// 端を越えて引いた時の抵抗：引くほど動きが小さくなる（急に止まらない）
+const rubberband = (over, size, c = 0.55) => (over * size * c) / (size + c * Math.abs(over));
+
 export function sheet({ title, left = 'キャンセル', right = '', onRight, build, onClose }) {
   const bd = backdrop(() => close());
   const el = document.createElement('div');
@@ -175,8 +180,9 @@ export function sheet({ title, left = 'キャンセル', right = '', onRight, bu
   function close() {
     if (closed) return; closed = true;
     if (counted) stack('sheet', -1);
+    el.style.transform = ''; el.style.transition = '';
     el.classList.remove('show'); bd.classList.remove('show');
-    setTimeout(() => { el.remove(); bd.remove(); }, 320);
+    setTimeout(() => { el.remove(); bd.remove(); }, MODAL_OUT + 40);
     onClose?.();
   }
   $('.l', el).onclick = close;
@@ -187,13 +193,35 @@ export function sheet({ title, left = 'キャンセル', right = '', onRight, bu
   requestAnimationFrame(() => requestAnimationFrame(() => { if (closed) return; el.classList.add('show'); stack('sheet', 1); counted = true; }));
   // 開いた時だけ中身を順に出す（中で描き直した時は動かさない）
   setTimeout(() => el.classList.add('settled'), 450);
-  // つまみを下へ引いて閉じる
-  let y0 = null, dy = 0;
+  // つまみ・見出しを下へ引いて閉じる
+  //  ・開いている途中でつかんでも、いま見えている位置から指に付いてくる
+  //  ・上へ引いた時は止めずに、引くほど重くなる
+  //  ・ゆっくり遠くまで引いても、短くすばやく払っても閉じる
+  let drag = null;
   const head = $('.sheet-head', el), grab = $('.grabber', el);
   for (const h of [head, grab]) {
-    h.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; el.style.transition = 'none'; }, { passive: true });
-    h.addEventListener('touchmove', (e) => { if (y0 == null) return; dy = Math.max(0, e.touches[0].clientY - y0); el.style.transform = `translateY(${dy}px)`; }, { passive: true });
-    h.addEventListener('touchend', () => { el.style.transition = ''; el.style.transform = ''; if (dy > 110) close(); y0 = null; dy = 0; });
+    h.addEventListener('touchstart', (e) => {
+      if (drag || e.touches.length > 1) return; // 2本目の指は無視（位置が飛ばないように）
+      let from = 0; try { from = new DOMMatrixReadOnly(getComputedStyle(el).transform).m42 || 0; } catch {}
+      drag = { y0: e.touches[0].clientY - from, t0: performance.now(), dy: from };
+      el.style.transition = 'none';
+      el.style.setProperty('transform', `translateY(${from}px)`, 'important');
+    }, { passive: true });
+    h.addEventListener('touchmove', (e) => {
+      if (!drag) return;
+      const raw = e.touches[0].clientY - drag.y0;
+      drag.dy = raw >= 0 ? raw : rubberband(raw, el.offsetHeight);
+      el.style.setProperty('transform', `translateY(${drag.dy}px)`, 'important'); // 動きを減らす設定でも指には付いてくる
+    }, { passive: true });
+    const end = () => {
+      if (!drag) return;
+      const { dy, t0 } = drag; drag = null;
+      const v = dy / Math.max(1, performance.now() - t0); // px/ms
+      el.style.transition = ''; el.style.transform = '';
+      if (dy > 110 || (dy > 24 && v > 0.11)) close();
+    };
+    h.addEventListener('touchend', end);
+    h.addEventListener('touchcancel', end);
   }
   return { el, body, close };
 }
@@ -206,17 +234,20 @@ export function page({ title, right = '', onRight, build, onClose }) {
   $('#layers').append(el);
   const body = $('.page-body', el);
   let closed = false, pushed = false;
-  function close() { if (closed) return; closed = true; if (pushed) stack('page', -1); el.classList.remove('show'); setTimeout(() => el.remove(), 320); onClose?.(); }
+  function close() { if (closed) return; closed = true; if (pushed) stack('page', -1); el.style.transform = ''; el.style.transition = ''; el.classList.remove('show'); setTimeout(() => el.remove(), MODAL_OUT + 40); onClose?.(); }
   $('.back', el).onclick = close;
   if (onRight) $('.right', el).onclick = () => onRight(body, close);
   build?.(body, close);
   requestAnimationFrame(() => requestAnimationFrame(() => { if (closed) return; el.classList.add('show'); stack('page', 1); pushed = true; }));
   setTimeout(() => el.classList.add('settled'), 450);
   // 左端から右へなぞって戻る
-  let x0 = null, dx = 0;
-  el.addEventListener('touchstart', (e) => { if (e.touches[0].clientX < 24) { x0 = e.touches[0].clientX; el.style.transition = 'none'; } }, { passive: true });
-  el.addEventListener('touchmove', (e) => { if (x0 == null) return; dx = Math.max(0, e.touches[0].clientX - x0); el.style.transform = `translateX(${dx}px)`; }, { passive: true });
-  el.addEventListener('touchend', () => { if (x0 == null) return; el.style.transition = ''; el.style.transform = ''; if (dx > 90) close(); x0 = null; dx = 0; });
+  //  （すばやく払っても戻れる。2本目の指は無視）
+  let x0 = null, dx = 0, t0 = 0;
+  el.addEventListener('touchstart', (e) => { if (x0 == null && e.touches.length === 1 && e.touches[0].clientX < 24) { x0 = e.touches[0].clientX; t0 = performance.now(); el.style.transition = 'none'; } }, { passive: true });
+  el.addEventListener('touchmove', (e) => { if (x0 == null) return; dx = Math.max(0, e.touches[0].clientX - x0); el.style.setProperty('transform', `translateX(${dx}px)`, 'important'); }, { passive: true });
+  const pend = () => { if (x0 == null) return; const v = dx / Math.max(1, performance.now() - t0); el.style.transition = ''; el.style.transform = ''; if (dx > 90 || (dx > 24 && v > 0.11)) close(); x0 = null; dx = 0; };
+  el.addEventListener('touchend', pend);
+  el.addEventListener('touchcancel', pend);
   return { el, body, close };
 }
 
@@ -229,7 +260,7 @@ export function confirmBox(title, msg = '', ok = 'OK', { destructive = false, ca
     el.innerHTML = `<div class="body"><b>${esc(title)}</b><p>${esc(msg)}</p></div><div class="btns">${cancel ? `<button class="c">${esc(cancel)}</button>` : ''}<button class="o ${destructive ? 'destructive' : ''}">${esc(ok)}</button></div>`;
     $('#layers').append(el);
     requestAnimationFrame(() => el.classList.add('show'));
-    const done = (v) => { el.classList.remove('show'); bd.classList.remove('show'); setTimeout(() => { el.remove(); bd.remove(); }, 250); res(v); };
+    const done = (v) => { el.classList.remove('show'); bd.classList.remove('show'); setTimeout(() => { el.remove(); bd.remove(); }, MODAL_OUT + 40); res(v); };
     $('.o', el).onclick = () => done(true);
     if (cancel) $('.c', el).onclick = () => done(false);
   });
